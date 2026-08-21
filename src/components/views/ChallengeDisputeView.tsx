@@ -10,6 +10,7 @@
 // e aciona os handlers criarDesafio1v1, submeterRespostaDesafio e criarRevanche.
 // =====================================================================================
 import React, { useState, useEffect, useRef } from 'react';
+import { formatAlternativaText } from '../../utils/questionHelpers';
 import { useSST } from '../../context/SSTContext';
 import { Desafio1v1 } from '../../types';
 import { 
@@ -773,7 +774,7 @@ export const ChallengeDisputeView: React.FC<ChallengeDisputeViewProps> = ({ acti
                           >
                             <div className="flex items-center space-x-3">
                               <span className="font-bold text-purple-400">{String.fromCharCode(65 + altIdx)}.</span>
-                              <span>{altText}</span>
+                              <span>{formatAlternativaText(altText)}</span>
                             </div>
                             {perguntaConfirmada && eCorreta && <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />}
                             {perguntaConfirmada && eSelecionada && !eCorreta && <XCircle className="w-4 h-4 text-rose-400 shrink-0" />}

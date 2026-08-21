@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { formatAlternativaText, normalizeAlternativas } from '../../../utils/questionHelpers';
 import html2canvas from 'html2canvas-pro';
 import { jsPDF } from 'jspdf';
 import { ResultadoAvaliacaoSST } from '../../../types';
@@ -1283,12 +1284,13 @@ export const ProvaAvaliacaoPDFModal: React.FC<ProvaAvaliacaoPDFModalProps> = ({
                   <div className="space-y-4 pt-1">
                     {pag.questoes.map(({ questao: q, originalIndex: qIdx }) => {
                       const eCorreta = q.correta;
-                      const alts = q.alternativas || [
+                      const rawAlts = q.alternativas || [
                         q.resposta_fornecida,
                         q.resposta_correta,
                         'Outra opção de resposta',
                         'Opção complementar SST'
                       ];
+                      const alts = normalizeAlternativas(rawAlts);
 
                       const respString = (q.resposta_fornecida || '').trim();
                       const respStringLower = respString.toLowerCase();

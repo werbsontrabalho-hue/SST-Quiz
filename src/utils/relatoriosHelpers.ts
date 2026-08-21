@@ -8,6 +8,7 @@
 // ============================================================
 
 import { Usuario, Setor, QuizSessao, Desafio1v1, Pergunta } from '../types';
+import { formatAlternativaText, normalizeAlternativas } from './questionHelpers';
 
 // Origem dos dados que o admin quer analisar.
 export type OrigemRelatorio = 'todos' | 'quizzes' | 'desafios';
@@ -492,14 +493,16 @@ export interface RelatorioIndividual {
 }
 
 const montarDetalheResposta = (pergunta: Pergunta | undefined, escolhida: number, correta: boolean, tempo: number): DetalheRespostaRelatorio => {
-  const alternativas = pergunta?.alternativas || [];
+  const alternativas = normalizeAlternativas(pergunta?.alternativas || []);
+  const altEscolhidaVal = alternativas[escolhida];
+  const altCorretaVal = pergunta && pergunta.resposta_correta !== undefined ? alternativas[pergunta.resposta_correta] : undefined;
   return {
     pergunta_id: pergunta?.id || '',
     enunciado: pergunta?.enunciado || 'Pergunta não encontrada',
     alternativaEscolhida: escolhida,
-    alternativaEscolhidaTexto: alternativas[escolhida] !== undefined ? alternativas[escolhida] : (escolhida === -1 ? 'Não respondida (tempo esgotado)' : '—'),
+    alternativaEscolhidaTexto: altEscolhidaVal !== undefined ? formatAlternativaText(altEscolhidaVal) : (escolhida === -1 ? 'Não respondida (tempo esgotado)' : '—'),
     correta,
-    respostaCorretaTexto: pergunta && pergunta.resposta_correta !== undefined ? (alternativas[pergunta.resposta_correta] || '—') : '—',
+    respostaCorretaTexto: altCorretaVal !== undefined ? formatAlternativaText(altCorretaVal) : '—',
     explicacao: pergunta?.explicacao || '',
     norma: pergunta?.norma_relacionada || 'Geral',
     categoria: pergunta?.categoria || 'Geral',

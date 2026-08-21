@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { formatAlternativaText } from '../../../utils/questionHelpers';
 import { useSST } from '../../../context/SSTContext';
 import { SalaQuizGuiado, EstadoApresentacaoQuiz } from '../../../types';
 import { getPublicBaseUrl } from '../../../lib/publicBaseUrl';
@@ -512,7 +513,7 @@ export const PainelInstrutor: React.FC<PainelInstrutorProps> = ({
                           {letras[idx]}
                         </span>
                         <div>
-                          <span className="font-semibold text-slate-200 pt-0.5 block">{opcao}</span>
+                          <span className="font-semibold text-slate-200 pt-0.5 block">{formatAlternativaText(opcao)}</span>
                           {estadoApresentacao === 'ANSWER_REVEALED' && eCorreta && (
                             <span className="inline-flex items-center space-x-1 text-[10px] font-black text-emerald-400 uppercase tracking-wider mt-1 bg-emerald-500/20 px-2 py-0.5 rounded-md border border-emerald-500/40">
                               <CheckCircle2 className="w-3 h-3 text-emerald-400" />

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { formatAlternativaText } from '../../../utils/questionHelpers';
 import { useSST } from '../../../context/SSTContext';
 import { sanitizeSalaParaParticipante } from '../../../utils/salaSanitize';
 import { SalaQuizGuiado, ResultadoAvaliacaoSST } from '../../../types';
@@ -434,7 +435,7 @@ export const PainelParticipante: React.FC<PainelParticipanteProps> = ({
                     {letras[idx]}
                   </span>
                   <span className="text-xs font-bold leading-tight pt-1">
-                    {opcao}
+                    {formatAlternativaText(opcao)}
                   </span>
                 </button>
               );

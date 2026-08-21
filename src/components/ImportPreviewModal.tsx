@@ -6,6 +6,7 @@
 // ======================================================================
 
 import React from 'react';
+import { formatAlternativaText } from '../utils/questionHelpers';
 import { FileSpreadsheet, CheckCircle2, AlertTriangle, X, Check, HelpCircle, User, Building } from 'lucide-react';
 
 export interface ImportPreviewModalProps {
@@ -131,7 +132,7 @@ export const ImportPreviewModal: React.FC<ImportPreviewModalProps> = ({
                           Tipo: <strong>{item.tipo === 'verdadeiro_falso' ? 'V / F' : 'Múltipla Escolha'}</strong>
                         </span>
                         <span className="bg-white/5 border border-white/10 rounded px-1.5 py-0.5 text-slate-300">
-                          Correta: <strong className="text-emerald-400">{item.tipo === 'verdadeiro_falso' ? (item.resposta_correta === 0 ? 'Verdadeiro' : 'Falso') : item.alternativas?.[item.resposta_correta] || `Opção ${item.resposta_correta + 1}`}</strong>
+                          Correta: <strong className="text-emerald-400">{item.tipo === 'verdadeiro_falso' ? (item.resposta_correta === 0 ? 'Verdadeiro' : 'Falso') : formatAlternativaText(item.alternativas?.[item.resposta_correta]) || `Opção ${item.resposta_correta + 1}`}</strong>
                         </span>
                       </div>
                     </div>

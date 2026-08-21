@@ -1,4 +1,5 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabase';
+import { normalizePergunta } from '../utils/questionHelpers';
 import { 
   Empresa, 
   Setor, 
@@ -168,18 +169,32 @@ export const supabaseService = {
         console.warn('Sub-erros ao buscar dados no Supabase:', { setErr, usrErr, prgErr, cmpErr, qzErr, dsfErr, prmErr, rsgErr, bkpErr, salasErr, resErr });
       }
 
+      const perguntasNorm = (perguntasData as Pergunta[] || []).map(normalizePergunta);
+      const quizzesNorm = (quizzesData as QuizSessao[] || []).map(q => ({
+        ...q,
+        perguntas: Array.isArray(q.perguntas) ? q.perguntas.map(normalizePergunta) : q.perguntas
+      }));
+      const desafiosNorm = (desafiosData as Desafio1v1[] || []).map(d => ({
+        ...d,
+        perguntas: Array.isArray(d.perguntas) ? d.perguntas.map(normalizePergunta) : d.perguntas
+      }));
+      const salasNorm = (salasData as any[] || []).map(s => ({
+        ...s,
+        perguntas: Array.isArray(s.perguntas) ? s.perguntas.map(normalizePergunta) : s.perguntas
+      }));
+
       return {
         empresas: empresasData as Empresa[] || undefined,
         setores: setoresData as Setor[] || undefined,
         usuarios: usuariosData as Usuario[] || undefined,
-        perguntas: perguntasData as Pergunta[] || undefined,
+        perguntas: perguntasNorm || undefined,
         campanhas: campanhasData as Campanha[] || undefined,
-        quizzes: quizzesData as QuizSessao[] || undefined,
-        desafios: desafiosData as Desafio1v1[] || undefined,
+        quizzes: quizzesNorm || undefined,
+        desafios: desafiosNorm || undefined,
         premiacoes: premiacoesData as Premiacao[] || undefined,
         resgates: resgatesData as ResgatePremio[] || undefined,
         backupsHistorico: backupsData as any[] || undefined,
-        salasQuizGuiado: (salasData as any[]) || undefined,
+        salasQuizGuiado: salasNorm || undefined,
         resultadosAvaliacaoSST: (resultadosData as any[]) || undefined,
         hasData: true
       };
@@ -317,8 +332,18 @@ export const supabaseService = {
         ...pr,
         empresa_id: validEmpresaIds.has(pr.empresa_id) ? pr.empresa_id : fallbackEmpresaId
       }));
-      const { error: e8 } = await client.from('premiacoes').upsert(sanitizedPremiacoes);
-      if (e8) return { success: false, message: `Erro ao salvar premiações: ${e8.message}` };
+      let { error: e8 } = await client.from('premiacoes').upsert(sanitizedPremiacoes);
+      if (e8 && (e8.message.includes('ativo') || e8.message.includes('schema cache') || e8.message.includes('column'))) {
+        const withoutAtivo = sanitizedPremiacoes.map(({ ativo, ...rest }: any) => rest);
+        let retry = await client.from('premiacoes').upsert(withoutAtivo);
+        if (retry.error) {
+          const basicList = withoutAtivo.map(({ custo_pontos, estoque, imagem, ...basic }: any) => basic);
+          retry = await client.from('premiacoes').upsert(basicList);
+        }
+        if (retry.error) console.error('Erro ao salvar premiações no seed (retry):', retry.error.message);
+      } else if (e8) {
+        return { success: false, message: `Erro ao salvar premiações: ${e8.message}` };
+      }
 
       console.log('Dados iniciais inseridos com sucesso no Supabase!');
       return { success: true, message: 'Todas as tabelas do Supabase foram populadas com sucesso com os dados cadastrais!' };
@@ -588,8 +613,18 @@ export const supabaseService = {
           ...pr,
           empresa_id: validEmpresaIds.has(pr.empresa_id) ? pr.empresa_id : fallbackEmpresaId
         }));
-        const { error } = await client.from('premiacoes').upsert(sanitizedPremiacoes);
-        if (error) erros.push(`premiacoes: ${error.message}`);
+        let { error } = await client.from('premiacoes').upsert(sanitizedPremiacoes);
+        if (error && (error.message.includes('ativo') || error.message.includes('schema cache') || error.message.includes('column'))) {
+          const withoutAtivo = sanitizedPremiacoes.map(({ ativo, ...rest }: any) => rest);
+          let retry = await client.from('premiacoes').upsert(withoutAtivo);
+          if (retry.error) {
+            const basicList = withoutAtivo.map(({ custo_pontos, estoque, imagem, ...basic }: any) => basic);
+            retry = await client.from('premiacoes').upsert(basicList);
+          }
+          if (retry.error) erros.push(`premiacoes: ${retry.error.message}`);
+        } else if (error) {
+          erros.push(`premiacoes: ${error.message}`);
+        }
       }
 
       // 9. Sincroniza os resgates de prêmios
@@ -753,7 +788,24 @@ export const supabaseService = {
     const client = getSupabaseClient();
     if (!client) return false;
     try {
-      const { error } = await client.from('premiacoes').upsert(premiacao);
+      const sanitized: any = { ...premiacao };
+      let { error } = await client.from('premiacoes').upsert(sanitized);
+
+      if (error && (error.message.includes('ativo') || error.message.includes('schema cache') || error.message.includes('column'))) {
+        console.warn('Retentando upsertPremiacao sem colunas potencialmente ausentes no schema cache:', error.message);
+        const { ativo, ...withoutAtivo } = sanitized;
+        let retry = await client.from('premiacoes').upsert(withoutAtivo);
+        if (retry.error) {
+          const { custo_pontos, estoque, imagem, ...basic } = withoutAtivo;
+          retry = await client.from('premiacoes').upsert(basic);
+        }
+        if (retry.error) {
+          console.error('Erro ao upsertPremiacao (retry):', retry.error.message);
+          return false;
+        }
+        return true;
+      }
+
       if (error) {
         console.error('Erro ao upsertPremiacao:', error.message);
         return false;

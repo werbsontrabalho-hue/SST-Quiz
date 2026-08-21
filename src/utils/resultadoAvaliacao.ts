@@ -8,6 +8,7 @@
 // ============================================================================
 
 import { ParticipanteSalaQuiz, ResultadoAvaliacaoSST, SalaQuizGuiado } from '../types';
+import { formatAlternativaText, normalizeAlternativas } from './questionHelpers';
 
 export function calcularResultadoAvaliacaoParticipante(
   sala: SalaQuizGuiado,
@@ -44,7 +45,10 @@ export function calcularResultadoAvaliacaoParticipante(
     }
     if (correta) acertos++;
 
-    const alts = perg.alternativas || (perg as any).opcoes || [];
+    const alts = normalizeAlternativas(perg.alternativas || (perg as any).opcoes);
+    const respFornecidaVal = respIndex >= 0 ? alts[respIndex] : undefined;
+    const respCorretaVal = alts[perg.resposta_correta];
+
     return {
       pergunta_id: perg.id,
       enunciado: perg.enunciado,
@@ -52,8 +56,8 @@ export function calcularResultadoAvaliacaoParticipante(
       alternativas: alts,
       resposta_fornecida_index: respIndex,
       resposta_correta_index: perg.resposta_correta,
-      resposta_fornecida: respIndex >= 0 ? (alts[respIndex] || 'Não respondida') : 'Sem Resposta',
-      resposta_correta: alts[perg.resposta_correta] || '',
+      resposta_fornecida: respIndex >= 0 ? (respFornecidaVal ? formatAlternativaText(respFornecidaVal) : 'Não respondida') : 'Sem Resposta',
+      resposta_correta: respCorretaVal ? formatAlternativaText(respCorretaVal) : '',
       correta,
       explicacao: perg.explicacao,
     };

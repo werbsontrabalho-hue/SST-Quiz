@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { formatAlternativaText } from '../../../utils/questionHelpers';
 import { SalaQuizGuiado, EstadoApresentacaoQuiz } from '../../../types';
 import { QRCodeSvg } from './QRCodeSvg';
 import { 
@@ -347,7 +348,7 @@ export const TelaApresentacaoView: React.FC<TelaApresentacaoViewProps> = ({
                     <span className="w-12 h-12 rounded-2xl bg-white/10 border border-white/20 font-black text-xl flex items-center justify-center shrink-0 text-white">
                       {letras[idx]}
                     </span>
-                    <span className="text-base sm:text-lg font-extrabold leading-snug">{opcaoTexto}</span>
+                    <span className="text-base sm:text-lg font-extrabold leading-snug">{formatAlternativaText(opcaoTexto)}</span>
                   </div>
                 );
               })}

@@ -10,6 +10,7 @@
 // Conecta-se ao contexto global `useSST` para ler as perguntas e categorias
 // disponíveis e para chamar as funções de persistência do banco de dados.
 import React, { useState, useRef } from 'react';
+import { formatAlternativaText } from '../../utils/questionHelpers';
 import { useSST } from '../../context/SSTContext';
 import { Pergunta, CategoriaPergunta, DificuldadePergunta, TipoPergunta } from '../../types';
 import { SecurityConfirmModal } from '../SecurityConfirmModal';
@@ -583,7 +584,7 @@ export const QuestionBankView: React.FC = () => {
                     }`}
                   >
                     <span className="font-bold text-[11px]">{String.fromCharCode(65 + altIdx)}.</span>
-                    <span className="truncate">{alt}</span>
+                    <span className="truncate">{formatAlternativaText(alt)}</span>
                     {altIdx === perg.resposta_correta && <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 ml-auto" />}
                   </div>
                 ))}

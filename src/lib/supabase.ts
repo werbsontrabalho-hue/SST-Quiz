@@ -8,8 +8,8 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 // localStorage OU nas variáveis de ambiente (VITE_SUPABASE_*).
 // Retorna { url, key } com os valores trimados; retorna strings vazias
 // quando nada foi configurado.
-const DEFAULT_SUPABASE_URL = 'https://vsnilfdvmfhotvrwtiln.supabase.co';
-const DEFAULT_SUPABASE_ANON_KEY = 'sb_publishable_w2gt3uraWmugDmZNH6zmdQ_553Vf7bb';
+const DEFAULT_SUPABASE_URL = 'https://qmodxeztodqvmtiuyrib.supabase.co';
+const DEFAULT_SUPABASE_ANON_KEY = 'sb_publishable_YFjC82QAmtQp3VsMvNVLig_nq-f9-0L';
 
 export const getSupabaseConfig = () => {
   let localUrl = '';
@@ -32,8 +32,14 @@ export const getSupabaseConfig = () => {
 
   const metaEnv = (import.meta as any).env || {};
   // Fallback: lê as variáveis de ambiente (Vite ou Node/process) caso nada esteja no localStorage
-  const envUrl = metaEnv.VITE_SUPABASE_URL || (typeof process !== 'undefined' ? process.env.VITE_SUPABASE_URL : '');
-  const envKey = metaEnv.VITE_SUPABASE_ANON_KEY || (typeof process !== 'undefined' ? process.env.VITE_SUPABASE_ANON_KEY : '');
+  let envUrl = metaEnv.VITE_SUPABASE_URL || (typeof process !== 'undefined' ? process.env.VITE_SUPABASE_URL : '');
+  let envKey = metaEnv.VITE_SUPABASE_ANON_KEY || (typeof process !== 'undefined' ? process.env.VITE_SUPABASE_ANON_KEY : '');
+
+  // Filtra/ignora projeto obsoleto se ainda estiver salvo em variáveis ou localStorage
+  if (localUrl.includes('vsnilfdvmfhotvrwtiln')) localUrl = '';
+  if (localKey.includes('w2gt3ura')) localKey = '';
+  if (envUrl.includes('vsnilfdvmfhotvrwtiln')) envUrl = '';
+  if (envKey.includes('w2gt3ura')) envKey = '';
 
   // Preferência de uso: localStorage -> variáveis de ambiente -> credenciais padrão de produção
   const url = (localUrl && localUrl.trim()) ? localUrl.trim() : (envUrl && envUrl.trim() ? envUrl.trim() : DEFAULT_SUPABASE_URL);

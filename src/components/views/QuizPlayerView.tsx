@@ -12,6 +12,7 @@
 // Admins/super-admins possuem acesso restrito a essa tela.
 // ======================================================================
 import React, { useState, useEffect, useRef } from 'react';
+import { formatAlternativaText } from '../../utils/questionHelpers';
 import { useSST } from '../../context/SSTContext';
 import { QuizSessao, DetalheRespostaQuiz } from '../../types';
 import { 
@@ -497,7 +498,7 @@ export const QuizPlayerView: React.FC<QuizPlayerViewProps> = ({ quizId, onVoltar
                       }`}>
                         {String.fromCharCode(65 + idx)}
                       </span>
-                      <span>{altText}</span>
+                      <span>{formatAlternativaText(altText)}</span>
                     </div>
 
                     {respostaConfirmada && eCorreta && <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />}
