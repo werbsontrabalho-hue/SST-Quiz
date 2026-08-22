@@ -617,7 +617,7 @@ export const PainelInstrutor: React.FC<PainelInstrutorProps> = ({
               </div>
             ) : (
               resultadosDaSala.map(res => {
-                const aprovado = res.situacao === 'APROVADO';
+                const aprovado = res.situacao === 'APROVADO' || res.situacao === 'Aprovado';
                 return (
                   <div 
                     key={res.id}

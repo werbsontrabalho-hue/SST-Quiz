@@ -577,7 +577,7 @@ export const QuizGuiadoView: React.FC = () => {
                           Nota: {res.nota_final.toFixed(1)} / 10.0 ({res.porcentagem_acertos}% acertos)
                         </span>
                         <span className={`text-[10px] font-black uppercase ${
-                          res.situacao === 'APROVADO' ? 'text-emerald-400' : 'text-rose-400'
+                          (res.situacao === 'APROVADO' || res.situacao === 'Aprovado') ? 'text-emerald-400' : 'text-rose-400'
                         }`}>
                           {res.situacao}
                         </span>

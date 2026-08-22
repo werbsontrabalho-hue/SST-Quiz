@@ -640,7 +640,7 @@ export const ProvaAvaliacaoPDFModal: React.FC<ProvaAvaliacaoPDFModalProps> = ({
 
   if (!isOpen || !resultado) return null;
 
-  const aprovado = resultado.situacao === 'APROVADO';
+  const aprovado = resultado.situacao === 'APROVADO' || resultado.situacao === 'Aprovado';
 
   // Formatação de Horários e Códigos Únicos
   const dataProvaFormatada = resultado.data_finalizacao 

@@ -161,9 +161,9 @@ export const LaudosAvaliacoesTab: React.FC<LaudosAvaliacoesTabProps> = ({
 
     // 3. Filtro por situação (Aprovado / Não Aprovado)
     if (filtroSituacao === 'aprovados') {
-      list = list.filter(r => r.situacao === 'APROVADO');
+      list = list.filter(r => r.situacao === 'APROVADO' || r.situacao === 'Aprovado');
     } else if (filtroSituacao === 'reprovados') {
-      list = list.filter(r => r.situacao === 'NAO_APROVADO');
+      list = list.filter(r => r.situacao === 'NAO_APROVADO' || r.situacao === 'Reprovado');
     }
 
     // 4. Ordenação
@@ -198,7 +198,7 @@ export const LaudosAvaliacoesTab: React.FC<LaudosAvaliacoesTabProps> = ({
     const total = laudosVisiveis.length;
     if (total === 0) return { total: 0, aprovados: 0, reprovados: 0, taxaAprovacao: 0, mediaNotas: '0.0' };
 
-    const aprovados = laudosVisiveis.filter(r => r.situacao === 'APROVADO').length;
+    const aprovados = laudosVisiveis.filter(r => r.situacao === 'APROVADO' || r.situacao === 'Aprovado').length;
     const reprovados = total - aprovados;
     const taxaAprovacao = Math.round((aprovados / total) * 100);
     const somaNotas = laudosVisiveis.reduce((acc, cur) => acc + (cur.nota_final || 0), 0);
@@ -412,7 +412,7 @@ export const LaudosAvaliacoesTab: React.FC<LaudosAvaliacoesTabProps> = ({
       ) : (
         <div className="space-y-3">
           {laudosFiltrados.map((res) => {
-            const aprovado = res.situacao === 'APROVADO';
+            const aprovado = res.situacao === 'APROVADO' || res.situacao === 'Aprovado';
             const dataFormatada = res.data_finalizacao
               ? new Date(res.data_finalizacao).toLocaleDateString('pt-BR') + ' às ' + new Date(res.data_finalizacao).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
               : res.data;

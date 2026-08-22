@@ -79,20 +79,84 @@ function normalizarSalaParaSupabase(sala: any): any {
   return copia;
 }
 
-// Normaliza um resultado de avaliação SST antes do upsert: remove campos
-// inexistentes no banco (a migration 009 adicionou os principais; aqui
-// garantimos que nada que o Supabase não conhece seja enviado).
+// Colunas canônicas suportadas na tabela resultados_avaliacao_sst do Supabase.
+// Garante que campos extras do app (como codigo_documento, sessao_id, etc)
+// não causem erro PGRST204 no PostgREST.
+const COLUNAS_SUPORTADAS_RESULTADOS_SST = new Set([
+  'id',
+  'sala_id',
+  'participante_nome',
+  'participante_id',
+  'cpf_ou_empresa',
+  'is_visitante',
+  'treinamento_titulo',
+  'instrutor_nome',
+  'data',
+  'total_perguntas',
+  'acertos',
+  'erros',
+  'nota_final',
+  'nota_minima',
+  'situacao',
+  'desempenho_por_tema',
+  'respostas_detalhadas',
+  'matricula',
+  'cpf',
+  'cargo',
+  'setor_nome',
+  'email',
+  'sala_nome',
+  'data_finalizacao',
+  'porcentagem_acertos',
+  'questoes_corretas',
+  'total_questoes',
+  'nota_minima_aprovacao'
+]);
+
 function normalizarResultadoParaSupabase(resultado: any): any {
   if (!resultado || typeof resultado !== 'object') return resultado;
   const copia: any = { ...resultado };
-  // Aliases de nota mínima: mantém o campo novo da migration 009 se existir,
-  // senão deriva da nota_minima canônica (base-100, como o app usa).
   if (copia.nota_minima_aprovacao === undefined && copia.nota_minima !== undefined) {
     const n = Number(copia.nota_minima);
     copia.nota_minima_aprovacao = !isNaN(n) ? Math.round(n * 10) : undefined;
   }
   if (copia.nota_final !== undefined && copia.nota_minima === undefined) {
     copia.nota_minima = Number(copia.nota_final);
+  }
+
+  // Ajusta a propriedade 'situacao' para atender à restrição de validação CHECK
+  // (resultados_avaliacao_sst_situacao_check) no Supabase, que exige estritamente 'Aprovado' ou 'Reprovado'.
+  if (copia.situacao !== undefined && copia.situacao !== null) {
+    const sitUpper = String(copia.situacao).toUpperCase();
+    if (sitUpper.includes('APROVAD') && !sitUpper.includes('NAO') && !sitUpper.includes('NÃO')) {
+      copia.situacao = 'Aprovado';
+    } else {
+      copia.situacao = 'Reprovado';
+    }
+  } else if (copia.nota_final !== undefined && copia.nota_minima !== undefined) {
+    copia.situacao = Number(copia.nota_final) >= Number(copia.nota_minima) ? 'Aprovado' : 'Reprovado';
+  }
+
+  // Sanitiza para manter estritamente as colunas existentes na tabela
+  const sanitizado: any = {};
+  for (const k of Object.keys(copia)) {
+    if (COLUNAS_SUPORTADAS_RESULTADOS_SST.has(k) && copia[k] !== undefined) {
+      sanitizado[k] = copia[k];
+    }
+  }
+  return sanitizado;
+}
+
+function normalizarResultadoDoSupabase(item: any): any {
+  if (!item || typeof item !== 'object') return item;
+  const copia: any = { ...item };
+  if (copia.situacao) {
+    const sitUpper = String(copia.situacao).toUpperCase();
+    if (sitUpper.includes('APROVAD') && !sitUpper.includes('NAO') && !sitUpper.includes('NÃO')) {
+      copia.situacao = 'APROVADO';
+    } else {
+      copia.situacao = 'NAO_APROVADO';
+    }
   }
   return copia;
 }
@@ -208,7 +272,7 @@ export const supabaseService = {
         resgates: resgatesData as ResgatePremio[] || undefined,
         backupsHistorico: backupsData as any[] || undefined,
         salasQuizGuiado: salasNorm || undefined,
-        resultadosAvaliacaoSST: (resultadosData as any[]) || undefined,
+        resultadosAvaliacaoSST: Array.isArray(resultadosData) ? resultadosData.map(normalizarResultadoDoSupabase) : undefined,
         hasData
       };
     } catch (err) {
@@ -1069,11 +1133,12 @@ export const supabaseService = {
     try {
       const { data, error } = await client.from('resultados_avaliacao_sst').select('*').order('data_finalizacao', { ascending: false });
       if (data && !error && Array.isArray(data)) {
+        const normData = data.map(normalizarResultadoDoSupabase);
         // Atualiza a réplica local para bater exatamente com a nuvem quando online
         try {
-          localStorage.setItem('sst_resultados_avaliacao_sst', JSON.stringify(data));
+          localStorage.setItem('sst_resultados_avaliacao_sst', JSON.stringify(normData));
         } catch (e) {}
-        return data;
+        return normData;
       }
       if (error) {
         console.warn('Aviso ao buscar resultados_avaliacao_sst no Supabase:', error.message);
@@ -1097,29 +1162,50 @@ export const supabaseService = {
     const client = getSupabaseClient();
     if (!client) return;
     try {
-      const resultadoNormalizado = normalizarResultadoParaSupabase(resultado);
-      const { error } = await client.from('resultados_avaliacao_sst').upsert(resultadoNormalizado);
-      if (error) {
-        console.error('Erro ao upsertResultadoAvaliacaoSST no Supabase:', error.message, error.code);
-        // Resiliência contra Foreign Key violation (23503): se sala_id, empresa_id ou instrutor_id não existirem na nuvem,
-        // salva com null nessas referências para NUNCA perder o laudo de avaliação!
+      let payload = normalizarResultadoParaSupabase(resultado);
+      let maxRetries = 5;
+      let lastError: any = null;
+
+      while (maxRetries > 0) {
+        const { error } = await client.from('resultados_avaliacao_sst').upsert(payload);
+        if (!error) {
+          console.log('Laudo salvo no Supabase com sucesso:', resultado.id);
+          return;
+        }
+
+        lastError = error;
+        console.warn(`Tentativa de upsertResultadoAvaliacaoSST retornou erro [${error.code}]:`, error.message);
+
+        // Trata coluna ausente no cache de esquema (PGRST204)
+        if (error.code === 'PGRST204' || error.message?.includes('Could not find the')) {
+          const match = error.message?.match(/Could not find the '([^']+)' column/i);
+          if (match && match[1]) {
+            const colToRemove = match[1];
+            console.warn(`Removendo coluna inexistente '${colToRemove}' e tentando novamente...`);
+            delete payload[colToRemove];
+            maxRetries--;
+            continue;
+          }
+        }
+
+        // Resiliência contra Foreign Key violation (23503): se sala_id, empresa_id ou instrutor_id não existirem na nuvem
         if (error.code === '23503' || error.message?.toLowerCase().includes('foreign key')) {
           console.warn('Retentando salvar laudo com FKs nulas para garantir persistência na nuvem...');
-          const fallback = {
-            ...resultadoNormalizado,
+          payload = {
+            ...payload,
             sala_id: null,
             empresa_id: null,
             instrutor_id: null
           };
-          const retry = await client.from('resultados_avaliacao_sst').upsert(fallback);
-          if (retry.error) {
-            console.error('Erro crítico no retry de laudo no Supabase:', retry.error.message);
-          } else {
-            console.log('Laudo salvo no Supabase via fallback com sucesso!');
-          }
+          maxRetries--;
+          continue;
         }
-      } else {
-        console.log('Laudo salvo no Supabase com sucesso:', resultado.id);
+
+        break;
+      }
+
+      if (lastError) {
+        console.error('Erro ao upsertResultadoAvaliacaoSST no Supabase:', lastError.message, lastError.code);
       }
     } catch (err) {
       console.warn('Exceção ao upsertResultadoAvaliacaoSST no Supabase:', err);
