@@ -674,7 +674,7 @@ export const CriarSalaModal: React.FC<CriarSalaModalProps> = ({ isOpen, onClose,
                             />
                             <input
                               type="text"
-                              value={alt}
+                              value={typeof alt === 'string' ? alt : (alt ? String(alt) : '')}
                               onChange={(e) => {
                                 const copy = [...novasAlternativas];
                                 copy[idx] = e.target.value;

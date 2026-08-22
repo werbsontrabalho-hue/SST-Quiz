@@ -916,7 +916,7 @@ export const ProvaAvaliacaoPDFModal: React.FC<ProvaAvaliacaoPDFModalProps> = ({
                 <form onSubmit={handleCarregarUrlLogo} className="flex items-center space-x-1.5">
                   <input
                     type="text"
-                    value={urlLogoInput}
+                    value={urlLogoInput ?? ''}
                     onChange={(e) => setUrlLogoInput(e.target.value)}
                     placeholder="Ou cole a URL da imagem (https://...)"
                     className="flex-1 bg-slate-900 border border-white/20 rounded-xl px-2.5 py-1.5 text-white focus:outline-none focus:border-amber-400 text-[11px]"
@@ -997,7 +997,7 @@ export const ProvaAvaliacaoPDFModal: React.FC<ProvaAvaliacaoPDFModalProps> = ({
                   </label>
                   <input
                     type="text"
-                    value={cabecalhoConfig.empresaNome}
+                    value={cabecalhoConfig.empresaNome ?? ''}
                     onChange={(e) => setCabecalhoConfig(prev => ({ ...prev, empresaNome: e.target.value }))}
                     placeholder="Ex: MINHA EMPRESA LTDA — SEGURANÇA E SAÚDE"
                     className="w-full bg-slate-900 border border-white/20 rounded-xl px-3 py-1.5 text-white focus:outline-none focus:border-amber-400 text-xs"
@@ -1010,7 +1010,7 @@ export const ProvaAvaliacaoPDFModal: React.FC<ProvaAvaliacaoPDFModalProps> = ({
                   </label>
                   <input
                     type="text"
-                    value={cabecalhoConfig.tituloDocumento}
+                    value={cabecalhoConfig.tituloDocumento ?? ''}
                     onChange={(e) => setCabecalhoConfig(prev => ({ ...prev, tituloDocumento: e.target.value }))}
                     placeholder="Ex: AVALIAÇÃO TEÓRICA DE TREINAMENTO SST"
                     className="w-full bg-slate-900 border border-white/20 rounded-xl px-3 py-1.5 text-white focus:outline-none focus:border-amber-400 text-xs"
@@ -1023,7 +1023,7 @@ export const ProvaAvaliacaoPDFModal: React.FC<ProvaAvaliacaoPDFModalProps> = ({
                   </label>
                   <input
                     type="text"
-                    value={cabecalhoConfig.subtituloOuRegistro}
+                    value={cabecalhoConfig.subtituloOuRegistro ?? ''}
                     onChange={(e) => setCabecalhoConfig(prev => ({ ...prev, subtituloOuRegistro: e.target.value }))}
                     placeholder="Ex: SESMT — CNPJ: 00.000.000/0001-00 • Reg. MTE: 12345"
                     className="w-full bg-slate-900 border border-white/20 rounded-xl px-3 py-1.5 text-white focus:outline-none focus:border-amber-400 text-xs"
@@ -1036,7 +1036,7 @@ export const ProvaAvaliacaoPDFModal: React.FC<ProvaAvaliacaoPDFModalProps> = ({
                   </label>
                   <input
                     type="text"
-                    value={cabecalhoConfig.cargoInstrutorPersonalizado || ''}
+                    value={cabecalhoConfig.cargoInstrutorPersonalizado ?? ''}
                     onChange={(e) => setCabecalhoConfig(prev => ({ ...prev, cargoInstrutorPersonalizado: e.target.value }))}
                     placeholder="Ex: Técnico de Segurança do Trabalho - Reg. MTE 12345 / Instrutor SST"
                     className="w-full bg-slate-900 border border-white/20 rounded-xl px-3 py-1.5 text-white focus:outline-none focus:border-amber-400 text-xs"
@@ -1049,7 +1049,7 @@ export const ProvaAvaliacaoPDFModal: React.FC<ProvaAvaliacaoPDFModalProps> = ({
                   </label>
                   <textarea
                     rows={2}
-                    value={cabecalhoConfig.textoEvidenciaLegal}
+                    value={cabecalhoConfig.textoEvidenciaLegal ?? ''}
                     onChange={(e) => setCabecalhoConfig(prev => ({ ...prev, textoEvidenciaLegal: e.target.value }))}
                     placeholder="Evidência documental individual de verificação..."
                     className="w-full bg-slate-900 border border-white/20 rounded-xl px-3 py-1.5 text-white focus:outline-none focus:border-amber-400 text-[11px]"
@@ -1538,7 +1538,7 @@ export const ProvaAvaliacaoPDFModal: React.FC<ProvaAvaliacaoPDFModalProps> = ({
                 </label>
                 <input
                   type="email"
-                  value={emailDestinatario}
+                  value={emailDestinatario ?? ''}
                   onChange={(e) => setEmailDestinatario(e.target.value)}
                   placeholder="exemplo@empresa.com.br"
                   className="w-full bg-slate-950 border border-white/20 rounded-xl px-3.5 py-2.5 text-white focus:outline-none focus:border-blue-400 text-xs font-mono"

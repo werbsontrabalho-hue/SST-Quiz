@@ -913,12 +913,12 @@ export const SuperAdminView: React.FC = () => {
                     <button
                       onClick={() => {
                         setUsuarioParaEditar(u);
-                        setNomeUser(u.nome);
-                        setEmailUser(u.email);
-                        setCargoUser(u.cargo);
-                        setTargetEmpresaUser(u.empresa_id);
-                        setTargetSetorUser(u.setor_id);
-                        setPerfilUser(u.perfil);
+                        setNomeUser(u.nome || '');
+                        setEmailUser(u.email || '');
+                        setCargoUser(u.cargo || '');
+                        setTargetEmpresaUser(u.empresa_id || '');
+                        setTargetSetorUser(u.setor_id || '');
+                        setPerfilUser(u.perfil || 'colaborador');
                         setIsInstrutorUser(u.is_instrutor === true);
                         setAvatarUser(u.avatar || PRESET_AVATARS[0].url);
                         // CORREÇÃO: limpa os campos de senha na edição para não

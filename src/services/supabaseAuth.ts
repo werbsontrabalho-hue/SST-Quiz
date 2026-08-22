@@ -206,18 +206,28 @@ export async function vincularAuthUidAoUsuario(
   const client = getSupabaseClient();
   if (!client) return false;
   try {
-    const { data } = await client
+    let { data, error } = await client
       .from('v_usuarios_sem_senha')
       .select('id, auth_uid')
       .ilike('email', email)
       .maybeSingle();
+
+    if (error || !data) {
+      const { data: directData } = await client
+        .from('usuarios')
+        .select('id, auth_uid')
+        .ilike('email', email)
+        .maybeSingle();
+      data = directData;
+    }
+
     if (!data) return false;
     if (data.auth_uid === authUserId) return true;
-    const { data: rpcData, error } = await client.rpc('vincular_auth_uid', {
+    const { data: rpcData, error: rpcError } = await client.rpc('vincular_auth_uid', {
       p_usuario_id: data.id,
     });
-    if (error) {
-      console.warn('Não foi possível vincular auth_uid via RPC:', error.message);
+    if (rpcError) {
+      console.warn('Não foi possível vincular auth_uid via RPC:', rpcError.message);
       return false;
     }
     return Boolean(rpcData && (rpcData as any).success === true);

@@ -125,23 +125,11 @@ export const supabaseService = {
     if (!client) return { hasData: false };
 
     try {
-      // Otimização: Busca apenas as tabelas essenciais primeiro para validar se há dados.
-      // Se a tabela de empresas estiver vazia, não há sentido buscar as outras.
-      const { data: empresasData, error: empErr } = await client.from('empresas').select('*');
-      
-      if (empErr) {
-        console.warn('Erro ao buscar empresas:', empErr);
-        return { hasData: false };
-      }
-
-      if (!empresasData || empresasData.length === 0) {
-        return { hasData: false };
-      }
-
-      // Busca as demais tabelas em paralelo apenas se houver empresas cadastradas.
+      // Busca todas as tabelas em paralelo para evitar dependências falsas no boot
       const [
+        { data: empresasData, error: empErr },
         { data: setoresData, error: setErr },
-        { data: usuariosData, error: usrErr },
+        resUsuarios,
         { data: perguntasData, error: prgErr },
         { data: campanhasData, error: cmpErr },
         { data: quizzesData, error: qzErr },
@@ -152,6 +140,7 @@ export const supabaseService = {
         { data: salasData, error: salasErr },
         { data: resultadosData, error: resErr }
       ] = await Promise.all([
+        client.from('empresas').select('*'),
         client.from('setores').select('*'),
         client.from('v_usuarios_sem_senha').select('*'),
         client.from('perguntas').select('*'),
@@ -160,13 +149,27 @@ export const supabaseService = {
         client.from('desafios_1v1').select('*'),
         client.from('premiacoes').select('*'),
         client.from('resgates_premios').select('*'),
-        client.from('backups_historico').select('*').order('data', { ascending: false }),
+        client.from('backups_historico').select('*'),
         client.from('salas_quiz_guiado').select('*'),
         client.from('resultados_avaliacao_sst').select('*')
       ]);
 
-      if (setErr || usrErr || prgErr || cmpErr || qzErr || dsfErr || prmErr || rsgErr || bkpErr || salasErr || resErr) {
-        console.warn('Sub-erros ao buscar dados no Supabase:', { setErr, usrErr, prgErr, cmpErr, qzErr, dsfErr, prmErr, rsgErr, bkpErr, salasErr, resErr });
+      let usuariosData = resUsuarios.data;
+      let usrErr = resUsuarios.error;
+
+      // Fallback: se a view v_usuarios_sem_senha falhar ou não existir, busca diretamente da tabela usuarios
+      if (usrErr || !usuariosData || usuariosData.length === 0) {
+        const { data: directUsers, error: dErr } = await client
+          .from('usuarios')
+          .select('id, empresa_id, setor_id, auth_uid, nome, email, avatar, cargo, perfil, is_instrutor, ativo, estatisticas, trofeus_temporadas, ultimo_quiz_data, created_at');
+        if (!dErr && directUsers && directUsers.length > 0) {
+          usuariosData = directUsers;
+          usrErr = null;
+        }
+      }
+
+      if (empErr || setErr || usrErr || prgErr || cmpErr || qzErr || dsfErr || prmErr || rsgErr || bkpErr || salasErr || resErr) {
+        console.warn('Sub-erros ao buscar dados no Supabase:', { empErr, setErr, usrErr, prgErr, cmpErr, qzErr, dsfErr, prmErr, rsgErr, bkpErr, salasErr, resErr });
       }
 
       const perguntasNorm = (perguntasData as Pergunta[] || []).map(normalizePergunta);
@@ -183,6 +186,16 @@ export const supabaseService = {
         perguntas: Array.isArray(s.perguntas) ? s.perguntas.map(normalizePergunta) : s.perguntas
       }));
 
+      // A nuvem é considerada populada se QUALQUER uma das tabelas essenciais contiver dados
+      const hasData = Boolean(
+        (empresasData && empresasData.length > 0) ||
+        (usuariosData && usuariosData.length > 0) ||
+        (perguntasData && perguntasData.length > 0) ||
+        (quizzesData && quizzesData.length > 0) ||
+        (salasData && salasData.length > 0) ||
+        (resultadosData && resultadosData.length > 0)
+      );
+
       return {
         empresas: empresasData as Empresa[] || undefined,
         setores: setoresData as Setor[] || undefined,
@@ -196,7 +209,7 @@ export const supabaseService = {
         backupsHistorico: backupsData as any[] || undefined,
         salasQuizGuiado: salasNorm || undefined,
         resultadosAvaliacaoSST: (resultadosData as any[]) || undefined,
-        hasData: true
+        hasData
       };
     } catch (err) {
       console.error('Falha ao sincronizar dados do Supabase:', err);
@@ -324,8 +337,14 @@ export const supabaseService = {
         ...d,
         empresa_id: validEmpresaIds.has(d.empresa_id) ? d.empresa_id : fallbackEmpresaId
       }));
-      const { error: e7 } = await client.from('desafios_1v1').upsert(sanitizedDesafios);
-      if (e7) return { success: false, message: `Erro ao salvar desafios: ${e7.message}` };
+      let { error: e7 } = await client.from('desafios_1v1').upsert(sanitizedDesafios);
+      if (e7 && (e7.message.includes('decidido_no_desempate') || e7.message.includes('schema cache') || e7.message.includes('column'))) {
+        const withoutDecidido = sanitizedDesafios.map(({ decidido_no_desempate, ...rest }: any) => rest);
+        const retry = await client.from('desafios_1v1').upsert(withoutDecidido);
+        if (retry.error) console.error('Erro ao salvar desafios no seed (retry):', retry.error.message);
+      } else if (e7) {
+        return { success: false, message: `Erro ao salvar desafios: ${e7.message}` };
+      }
 
       // 8. Saneia e grava as premiações
       const sanitizedPremiacoes = premiacoes.map(pr => ({
@@ -603,8 +622,14 @@ export const supabaseService = {
           ...d,
           empresa_id: validEmpresaIds.has(d.empresa_id) ? d.empresa_id : fallbackEmpresaId
         }));
-        const { error } = await client.from('desafios_1v1').upsert(sanitizedDesafios);
-        if (error) erros.push(`desafios_1v1: ${error.message}`);
+        let { error } = await client.from('desafios_1v1').upsert(sanitizedDesafios);
+        if (error && (error.message.includes('decidido_no_desempate') || error.message.includes('schema cache') || error.message.includes('column'))) {
+          const withoutDecidido = sanitizedDesafios.map(({ decidido_no_desempate, ...rest }: any) => rest);
+          const retry = await client.from('desafios_1v1').upsert(withoutDecidido);
+          if (retry.error) erros.push(`desafios_1v1: ${retry.error.message}`);
+        } else if (error) {
+          erros.push(`desafios_1v1: ${error.message}`);
+        }
       }
 
       // 8. Sincroniza as premiações
@@ -757,7 +782,20 @@ export const supabaseService = {
     const client = getSupabaseClient();
     if (!client) return false;
     try {
-      const { error } = await client.from('desafios_1v1').upsert(desafio);
+      const sanitized: any = { ...desafio };
+      let { error } = await client.from('desafios_1v1').upsert(sanitized);
+
+      if (error && (error.message.includes('decidido_no_desempate') || error.message.includes('schema cache') || error.message.includes('column'))) {
+        console.warn('Retentando upsertDesafio sem colunas potencialmente ausentes no schema cache:', error.message);
+        const { decidido_no_desempate, ...withoutDecidido } = sanitized;
+        const retry = await client.from('desafios_1v1').upsert(withoutDecidido);
+        if (retry.error) {
+          console.error('Erro ao upsertDesafio (retry):', retry.error.message);
+          return false;
+        }
+        return true;
+      }
+
       if (error) {
         console.error('Erro ao upsertDesafio:', error.message);
         return false;
@@ -1029,12 +1067,16 @@ export const supabaseService = {
     if (!client) return localData;
 
     try {
-      const { data, error } = await client.from('resultados_avaliacao_sst').select('*');
+      const { data, error } = await client.from('resultados_avaliacao_sst').select('*').order('data_finalizacao', { ascending: false });
       if (data && !error && Array.isArray(data)) {
-        const map = new Map<string, any>();
-        localData.forEach(item => map.set(item.id, item));
-        data.forEach(item => map.set(item.id, item));
-        return Array.from(map.values());
+        // Atualiza a réplica local para bater exatamente com a nuvem quando online
+        try {
+          localStorage.setItem('sst_resultados_avaliacao_sst', JSON.stringify(data));
+        } catch (e) {}
+        return data;
+      }
+      if (error) {
+        console.warn('Aviso ao buscar resultados_avaliacao_sst no Supabase:', error.message);
       }
     } catch (err) {
       console.warn('Aviso ao buscar resultados_avaliacao_sst no Supabase:', err);
@@ -1056,9 +1098,31 @@ export const supabaseService = {
     if (!client) return;
     try {
       const resultadoNormalizado = normalizarResultadoParaSupabase(resultado);
-      await client.from('resultados_avaliacao_sst').upsert(resultadoNormalizado);
+      const { error } = await client.from('resultados_avaliacao_sst').upsert(resultadoNormalizado);
+      if (error) {
+        console.error('Erro ao upsertResultadoAvaliacaoSST no Supabase:', error.message, error.code);
+        // Resiliência contra Foreign Key violation (23503): se sala_id, empresa_id ou instrutor_id não existirem na nuvem,
+        // salva com null nessas referências para NUNCA perder o laudo de avaliação!
+        if (error.code === '23503' || error.message?.toLowerCase().includes('foreign key')) {
+          console.warn('Retentando salvar laudo com FKs nulas para garantir persistência na nuvem...');
+          const fallback = {
+            ...resultadoNormalizado,
+            sala_id: null,
+            empresa_id: null,
+            instrutor_id: null
+          };
+          const retry = await client.from('resultados_avaliacao_sst').upsert(fallback);
+          if (retry.error) {
+            console.error('Erro crítico no retry de laudo no Supabase:', retry.error.message);
+          } else {
+            console.log('Laudo salvo no Supabase via fallback com sucesso!');
+          }
+        }
+      } else {
+        console.log('Laudo salvo no Supabase com sucesso:', resultado.id);
+      }
     } catch (err) {
-      console.warn('Aviso ao upsertResultadoAvaliacaoSST no Supabase:', err);
+      console.warn('Exceção ao upsertResultadoAvaliacaoSST no Supabase:', err);
     }
   },
 
@@ -1070,7 +1134,12 @@ export const supabaseService = {
     const client = getSupabaseClient();
     if (!client) return;
     try {
-      await client.from('resultados_avaliacao_sst').delete().eq('id', id);
+      const { error } = await client.from('resultados_avaliacao_sst').delete().eq('id', id);
+      if (error) {
+        console.error('Erro ao deletar de resultados_avaliacao_sst no Supabase:', error.message);
+      } else {
+        console.log('Laudo deletado com sucesso no Supabase:', id);
+      }
     } catch (err) {
       console.warn('Erro ao deleteResultadoAvaliacaoSST:', err);
     }

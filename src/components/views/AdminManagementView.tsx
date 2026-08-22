@@ -76,6 +76,7 @@ export const AdminManagementView: React.FC = () => {
   const { 
     currentUser,
     empresa, 
+    empresas,
     setEmpresa, 
     setores, 
     usuarios, 
@@ -636,12 +637,18 @@ export const AdminManagementView: React.FC = () => {
   };
 
   // Lista de usuários exibida na tela, filtrada pela empresa atual.
-  // Para super_admin, inclui também os outros super admins globais
+  // Para super_admin, inclui também os outros super admins globais.
+  // Permite vinculação robusta por empresa.id, currentUser.empresa_id ou fallback quando há 1 empresa.
   const usuariosEmpresa = usuarios.filter(u => {
+    const pertencaEmpresa = 
+      u.empresa_id === empresa.id || 
+      u.empresa_id === currentUser.empresa_id || 
+      (!u.empresa_id && empresas.length <= 1);
+
     if (currentUser.perfil === 'super_admin') {
-      return u.perfil === 'super_admin' || u.empresa_id === empresa.id;
+      return u.perfil === 'super_admin' || pertencaEmpresa;
     }
-    return u.empresa_id === empresa.id && u.perfil !== 'super_admin';
+    return pertencaEmpresa && u.perfil !== 'super_admin';
   });
 
   // ============================================================
@@ -827,15 +834,15 @@ export const AdminManagementView: React.FC = () => {
                     onClick={() => {
                       // Preenche o formulário com os dados do usuário para edição
                       setUsuarioParaEditar(u);
-                      setNomeUser(u.nome);
-                      setEmailUser(u.email);
-                      setCargoUser(u.cargo);
+                      setNomeUser(u.nome || '');
+                      setEmailUser(u.email || '');
+                      setCargoUser(u.cargo || '');
                       setAvatarUser(u.avatar || '');
                       setSenhaUser('');
                       setConfirmSenhaUser('');
                       setUserErrorMsg('');
-                      setSetorIdUser(u.setor_id);
-                      setPerfilUser(u.perfil);
+                      setSetorIdUser(u.setor_id || '');
+                      setPerfilUser(u.perfil || 'colaborador');
                       setIsInstrutorUser(u.is_instrutor || false);
                     }}
                     className="p-1.5 bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 rounded-lg border border-blue-500/40"

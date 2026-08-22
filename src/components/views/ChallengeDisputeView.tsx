@@ -47,6 +47,7 @@ export const ChallengeDisputeView: React.FC<ChallengeDisputeViewProps> = ({ acti
   const { 
     currentUser, 
     empresa,
+    empresas,
     usuarios, 
     setores, 
     desafios, 
@@ -94,7 +95,11 @@ export const ChallengeDisputeView: React.FC<ChallengeDisputeViewProps> = ({ acti
   // Calcula a cota semanal de lançamentos competitivos por colaborador, baseada na
   // equalização dos setores: quanto maior o meu setor, menor a minha cota individual.
   // =====================================================================================
-  const empresaUsuarios = usuarios.filter(u => u.empresa_id === currentUser.empresa_id && u.perfil === 'colaborador' && u.ativo !== false);
+  const empresaUsuarios = usuarios.filter(u => 
+    (u.empresa_id === currentUser.empresa_id || u.empresa_id === empresa.id || (!u.empresa_id && empresas.length <= 1)) && 
+    u.perfil === 'colaborador' && 
+    u.ativo !== false
+  );
   const tamanhoPorSetor = setores.map(s => empresaUsuarios.filter(u => u.setor_id === s.id).length);
   const maxSetorTamanho = Math.max(...tamanhoPorSetor, 1);
   const totalSetorPermitido = maxSetorTamanho * 2;

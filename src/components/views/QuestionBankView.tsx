@@ -779,7 +779,7 @@ export const QuestionBankView: React.FC = () => {
                       />
                       <input
                         type="text"
-                        value={alt}
+                        value={typeof alt === 'string' ? alt : (alt ? String(alt) : '')}
                         onChange={(e) => {
                           const copy = [...novasAlternativas];
                           copy[idx] = e.target.value;
@@ -1169,7 +1169,7 @@ export const QuestionBankView: React.FC = () => {
                       />
                       <input
                         type="text"
-                        value={alt}
+                        value={typeof alt === 'string' ? alt : (alt ? String(alt) : '')}
                         onChange={(e) => {
                           const copy = [...novasAlternativas];
                           copy[idx] = e.target.value;

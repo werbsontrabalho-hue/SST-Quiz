@@ -615,11 +615,23 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
 
         // 1a. Perfil já vinculado ao auth_uid.
-        const { data: byAuth, error: authErr } = await client
+        let { data: byAuth, error: authErr } = await client
           .from('v_usuarios_sem_senha')
           .select('*')
           .eq('auth_uid', authResult.authUserId)
           .maybeSingle();
+
+        if (authErr || !byAuth) {
+          const { data: directAuth } = await client
+            .from('usuarios')
+            .select('id, empresa_id, setor_id, auth_uid, nome, email, avatar, cargo, perfil, is_instrutor, ativo, estatisticas, trofeus_temporadas, ultimo_quiz_data, created_at')
+            .eq('auth_uid', authResult.authUserId)
+            .maybeSingle();
+          if (directAuth) {
+            byAuth = directAuth;
+            authErr = null;
+          }
+        }
         const userFromAuth = (byAuth as Usuario) || undefined;
 
         if (userFromAuth && !authErr) {
@@ -644,21 +656,40 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         // 1b. Auth funcionou mas o perfil ainda não foi vinculado: localiza
         //     pelo e-mail na view pública e chama o RPC vincular_auth_uid
         //     (valida o e-mail no servidor — V-003 / migração 007).
-        const { data: byEmail } = await client
+        let { data: byEmail, error: emailErr } = await client
           .from('v_usuarios_sem_senha')
           .select('*')
           .ilike('email', cleanEmail)
           .maybeSingle();
+
+        if (emailErr || !byEmail) {
+          const { data: directByEmail } = await client
+            .from('usuarios')
+            .select('id, empresa_id, setor_id, auth_uid, nome, email, avatar, cargo, perfil, is_instrutor, ativo, estatisticas, trofeus_temporadas, ultimo_quiz_data, created_at')
+            .ilike('email', cleanEmail)
+            .maybeSingle();
+          if (directByEmail) byEmail = directByEmail;
+        }
+
         if (byEmail) {
           const userByEmail = byEmail as Usuario;
           const linked = await vincularAuthUidAoUsuario(authResult.authUserId, cleanEmail);
           if (linked) {
             // Rebusca pelo auth_uid para garantir dados atualizados do perfil.
-            const { data: afterLink } = await client
+            let { data: afterLink, error: afterErr } = await client
               .from('v_usuarios_sem_senha')
               .select('*')
               .eq('auth_uid', authResult.authUserId)
               .maybeSingle();
+
+            if (afterErr || !afterLink) {
+              const { data: directAfter } = await client
+                .from('usuarios')
+                .select('id, empresa_id, setor_id, auth_uid, nome, email, avatar, cargo, perfil, is_instrutor, ativo, estatisticas, trofeus_temporadas, ultimo_quiz_data, created_at')
+                .eq('auth_uid', authResult.authUserId)
+                .maybeSingle();
+              if (directAfter) afterLink = directAfter;
+            }
             const finalUser = (afterLink as Usuario) || userByEmail;
             const statusCheck = checkStatus(finalUser);
             if (!statusCheck.allowed) {
@@ -1080,9 +1111,13 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // paralelo (ex.: evento 'online' + timer de boot) e sobrescreva a fila.
   const syncEmAndamentoRef = useRef(false);
   const quizzesRef = useRef(quizzes);
+  const currentUserRef = useRef(currentUser);
   useEffect(() => {
     quizzesRef.current = quizzes;
   }, [quizzes]);
+  useEffect(() => {
+    currentUserRef.current = currentUser;
+  }, [currentUser]);
 
   // PWA & Network Online/Offline Listeners
   // LISTENERS DE CONEXÃO: detecta quando o usuário fica online/offline.
@@ -1235,6 +1270,48 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 canal: 'push'
               });
             }
+          }
+        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'usuarios' }, (payload) => {
+          if (payload.new && Object.keys(payload.new).length > 0) {
+            const updated = payload.new as Usuario;
+            setUsuarios(prev => {
+              const exists = prev.some(u => u.id === updated.id);
+              if (exists) return prev.map(u => u.id === updated.id ? { ...u, ...updated } : u);
+              return [updated, ...prev];
+            });
+            if (currentUserRef.current && currentUserRef.current.id === updated.id) {
+              setCurrentUser(prev => ({ ...prev, ...updated }));
+            }
+          } else if (payload.eventType === 'DELETE' && payload.old) {
+            const oldId = (payload.old as any).id;
+            if (oldId) setUsuarios(prev => prev.filter(u => u.id !== oldId));
+          }
+        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'setores' }, (payload) => {
+          if (payload.new && Object.keys(payload.new).length > 0) {
+            const updated = payload.new as Setor;
+            setSetores(prev => {
+              const exists = prev.some(s => s.id === updated.id);
+              if (exists) return prev.map(s => s.id === updated.id ? { ...s, ...updated } : s);
+              return [updated, ...prev];
+            });
+          } else if (payload.eventType === 'DELETE' && payload.old) {
+            const oldId = (payload.old as any).id;
+            if (oldId) setSetores(prev => prev.filter(s => s.id !== oldId));
+          }
+        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'empresas' }, (payload) => {
+          if (payload.new && Object.keys(payload.new).length > 0) {
+            const updated = payload.new as Empresa;
+            setEmpresas(prev => {
+              const exists = prev.some(e => e.id === updated.id);
+              if (exists) return prev.map(e => e.id === updated.id ? { ...e, ...updated } : e);
+              return [updated, ...prev];
+            });
+          } else if (payload.eventType === 'DELETE' && payload.old) {
+            const oldId = (payload.old as any).id;
+            if (oldId) setEmpresas(prev => prev.filter(e => e.id !== oldId));
           }
         })
         .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notificacoes' }, (payload) => {
@@ -1608,6 +1685,52 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             const uOk = await supabaseService.upsertUsuario(payload.usuarioSnapshot);
             if (!uOk) ok = false;
           }
+        } else if (item.tipo === 'usuario' || item.tipo === 'CRIAR_USUARIO' || item.tipo === 'EDITAR_USUARIO') {
+          const target = (item.payload && (item.payload as any).usuarioSnapshot) ? (item.payload as any).usuarioSnapshot : (item.payload as Usuario);
+          if (target) {
+            const uOk = await supabaseService.upsertUsuario(target);
+            if (!uOk) ok = false;
+          }
+        } else if (item.tipo === 'EXCLUIR_USUARIO') {
+          const userId = typeof item.payload === 'string' ? item.payload : (item.payload as any)?.id;
+          if (userId) {
+            await supabaseService.deleteUsuario(userId);
+          }
+        } else if (item.tipo === 'setor' || item.tipo === 'CRIAR_SETOR' || item.tipo === 'EDITAR_SETOR') {
+          await supabaseService.upsertSetor(item.payload as Setor);
+        } else if (item.tipo === 'EXCLUIR_SETOR') {
+          const setorId = typeof item.payload === 'string' ? item.payload : (item.payload as any)?.id;
+          if (setorId) {
+            await supabaseService.deleteSetor(setorId);
+          }
+        } else if (item.tipo === 'empresa' || item.tipo === 'CRIAR_EMPRESA' || item.tipo === 'EDITAR_EMPRESA') {
+          await supabaseService.upsertEmpresa(item.payload as Empresa);
+        } else if (item.tipo === 'EXCLUIR_EMPRESA') {
+          const empId = typeof item.payload === 'string' ? item.payload : (item.payload as any)?.id;
+          if (empId) {
+            await supabaseService.deleteEmpresa(empId);
+          }
+        } else if (item.tipo === 'pergunta' || item.tipo === 'CRIAR_PERGUNTA' || item.tipo === 'EDITAR_PERGUNTA') {
+          await supabaseService.upsertPergunta(item.payload as Pergunta);
+        } else if (item.tipo === 'EXCLUIR_PERGUNTA') {
+          const pergId = typeof item.payload === 'string' ? item.payload : (item.payload as any)?.id;
+          if (pergId) {
+            await supabaseService.deletePergunta(pergId);
+          }
+        } else if (item.tipo === 'campanha' || item.tipo === 'CRIAR_CAMPANHA' || item.tipo === 'EDITAR_CAMPANHA') {
+          await supabaseService.upsertCampanha(item.payload as Campanha);
+        } else if (item.tipo === 'EXCLUIR_CAMPANHA') {
+          const campId = typeof item.payload === 'string' ? item.payload : (item.payload as any)?.id;
+          if (campId) {
+            await supabaseService.deleteCampanha(campId);
+          }
+        } else if (item.tipo === 'premiacao' || item.tipo === 'CRIAR_PREMIACAO' || item.tipo === 'EDITAR_PREMIACAO') {
+          await supabaseService.upsertPremiacao(item.payload as Premiacao);
+        } else if (item.tipo === 'EXCLUIR_PREMIACAO') {
+          const premId = typeof item.payload === 'string' ? item.payload : (item.payload as any)?.id;
+          if (premId) {
+            await supabaseService.deletePremiacao(premId);
+          }
         }
       } catch (err) {
         console.warn('Erro ao sincronizar item offline:', err);
@@ -1635,6 +1758,20 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         tipo: 'quiz_diario',
         canal: 'push'
       });
+    }
+
+    // Busca novidades atualizadas da nuvem caso a sincronização de saída tenha concluído
+    if (falharam.length === 0 && isSupabaseConfigured()) {
+      supabaseService.fetchAllData().then(data => {
+        if (data.usuarios && Array.isArray(data.usuarios)) setUsuarios(data.usuarios);
+        if (data.setores && Array.isArray(data.setores)) setSetores(data.setores);
+        if (data.empresas && Array.isArray(data.empresas)) setEmpresas(data.empresas);
+        if (data.perguntas && Array.isArray(data.perguntas)) setPerguntas(data.perguntas);
+        if (data.campanhas && Array.isArray(data.campanhas)) setCampanhas(data.campanhas);
+        if (data.quizzes && Array.isArray(data.quizzes)) setQuizzes(data.quizzes);
+        if (data.desafios && Array.isArray(data.desafios)) setDesafios(data.desafios);
+        if (data.premiacoes && Array.isArray(data.premiacoes)) setPremiacoes(data.premiacoes);
+      }).catch(err => console.warn('Erro ao puxar dados da nuvem apos sincronizacao:', err));
     }
     } finally {
       syncEmAndamentoRef.current = false;
@@ -1804,23 +1941,36 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           // (Se o Admin quiser enviar dados locais para a nuvem, usa o botão
           // "Sincronizar dados locais" no modal do Supabase.)
 
-          // EMPRESAS: banco vence
-          const dbEmpresas = data.empresas || [];
-          setEmpresas(dbEmpresas);
-          // Mantém a empresa selecionada se ela existir no banco.
-          const empresaAtualNoBanco = dbEmpresas.find(e => e.id === empresa.id);
-          if (empresaAtualNoBanco) setEmpresa(empresaAtualNoBanco);
+          // EMPRESAS: banco vence (se retornado com sucesso)
+          if (data.empresas && Array.isArray(data.empresas) && data.empresas.length > 0) {
+            setEmpresas(data.empresas);
+          }
 
-          // SETORES: banco vence
-          const dbSetores = data.setores || [];
-          setSetores(dbSetores);
+          // SETORES: banco vence (se retornado com sucesso)
+          if (data.setores && Array.isArray(data.setores)) {
+            setSetores(data.setores);
+          }
 
-          // USUÁRIOS: banco vence (corrige contagem divergente app vs banco)
-          const dbUsers = data.usuarios || [];
-          setUsuarios(dbUsers);
-          const currentInDb = dbUsers.find(u => u.id === currentUser.id) ||
-                              dbUsers.find(u => u.email.toLowerCase() === currentUser.email.toLowerCase());
-          if (currentInDb) setCurrentUser(currentInDb);
+          // USUÁRIOS: banco vence (evita apagar usuários locais se a consulta à nuvem falhou)
+          let activeUser = currentUser;
+          if (data.usuarios && Array.isArray(data.usuarios)) {
+            setUsuarios(data.usuarios);
+            const currentInDb = data.usuarios.find(u => u.id === currentUser.id) ||
+                                data.usuarios.find(u => u.email.toLowerCase() === currentUser.email.toLowerCase());
+            if (currentInDb) {
+              setCurrentUser(currentInDb);
+              activeUser = currentInDb;
+            }
+          }
+
+          // SINCRONIA DE EMPRESA ATIVA: Garante que a empresa no estado corresponda à empresa do usuário logado
+          if (data.empresas && Array.isArray(data.empresas) && data.empresas.length > 0) {
+            const empAlvoId = activeUser?.empresa_id || empresa.id;
+            const empresaCorrespondente = data.empresas.find(e => e.id === empAlvoId) ||
+                                          data.empresas.find(e => e.id === empresa.id) ||
+                                          data.empresas[0];
+            if (empresaCorrespondente) setEmpresa(empresaCorrespondente);
+          }
 
           // Atualiza o restante dos estados com os dados vindos da nuvem.
           if (data.perguntas) setPerguntas(data.perguntas);
@@ -1832,7 +1982,9 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (data.salasQuizGuiado && data.salasQuizGuiado.length > 0) {
             setSalasQuizGuiado(data.salasQuizGuiado as SalaQuizGuiado[]);
           }
-          if (data.resultadosAvaliacaoSST && data.resultadosAvaliacaoSST.length > 0) setResultadosAvaliacaoSST(data.resultadosAvaliacaoSST);
+          if (data.resultadosAvaliacaoSST) {
+            setResultadosAvaliacaoSST(data.resultadosAvaliacaoSST);
+          }
           // Converte os backups vindos da nuvem para o formato local.
           if (data.backupsHistorico && data.backupsHistorico.length > 0) {
             const mappedBkp = data.backupsHistorico.map((b: any) => ({
@@ -3405,7 +3557,45 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       },
     };
     setUsuarios(prev => [...prev, item]);
-    supabaseService.upsertUsuario(item);
+
+    if (!isOfflineMode && navigator.onLine && isSupabaseActive) {
+      supabaseService.upsertUsuario(item).then(ok => {
+        if (!ok) {
+          setItensPendentesSync(prev => [
+            ...prev,
+            {
+              id: `sync-usr-${Date.now()}`,
+              tipo: 'CRIAR_USUARIO',
+              payload: item,
+              criado_em: new Date().toISOString(),
+              status: 'pendente',
+            }
+          ]);
+        }
+      }).catch(() => {
+        setItensPendentesSync(prev => [
+          ...prev,
+          {
+            id: `sync-usr-${Date.now()}`,
+            tipo: 'CRIAR_USUARIO',
+            payload: item,
+            criado_em: new Date().toISOString(),
+            status: 'pendente',
+          }
+        ]);
+      });
+    } else {
+      setItensPendentesSync(prev => [
+        ...prev,
+        {
+          id: `sync-usr-${Date.now()}`,
+          tipo: 'CRIAR_USUARIO',
+          payload: item,
+          criado_em: new Date().toISOString(),
+          status: 'pendente',
+        }
+      ]);
+    }
   };
 
   // Cadastro em lote de usuários (importação CSV).
@@ -4549,181 +4739,165 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  const encerrarSalaQuizGuiado = (salaId: string) => {
+  const encerrarSalaQuizGuiado = async (salaId: string) => {
     // SERVER-FIRST: registra data_encerramento (timestamp server-side).
     if (isSupabaseActive && isSupabaseConfigured() && !isOfflineMode) {
       supabaseService.registrarMarcoSalaQuizGuiadoRpc(salaId, 'encerramento')
         .catch(err => console.warn('Falha ao registrar encerramento da sala no servidor:', err));
     }
-    setSalasQuizGuiado(prev => prev.map(s => {
-      if (s.id !== salaId) return s;
 
-      // REGRA DE ARMAZENAMENTO: Apenas a Avaliação Teórica SST gera e armazena relatórios permanentes
-      const isModoAvaliacao = s.modalidade === 'avaliacao';
-      const novosResultados: ResultadoAvaliacaoSST[] = [];
-      const participantes = s.participantes || [];
-      const perguntas = s.perguntas || [];
+    const salaTarget = salasQuizGuiado.find(s => s.id === salaId);
+    if (!salaTarget) return;
 
-      const participantesProcessados = participantes.map(p => {
-        const total = perguntas.length;
-        let acertos = 0;
+    const isModoAvaliacao = salaTarget.modalidade === 'avaliacao';
+    const novosResultados: ResultadoAvaliacaoSST[] = [];
+    const participantes = salaTarget.participantes || [];
+    const perguntas = salaTarget.perguntas || [];
 
-        const respostasDetalhadas = perguntas.map(perg => {
-          const respMap = p.respostas || {};
-          const resp = respMap[perg.id];
-          const respIndex = resp ? resp.resposta_index : -1;
-          // CORREÇÃO (auditoria A-06 — unificar cálculo): usa a flag `correta`
-          // VALIDADA NO SERVIDOR quando disponível (gravada em resp.correta no
-          // momento da resposta), igual a calcularResultadoAvaliacaoParticipante.
-          // Recalcular com o gabarito LOCAL diverge do servidor quando o
-          // participante recebeu a sala sanitizada (sem resposta_correta).
-          const correta =
-            resp && typeof resp.correta === 'boolean'
-              ? resp.correta
-              : respIndex === perg.resposta_correta;
-          if (correta) acertos++;
+    const participantesProcessados = participantes.map(p => {
+      const total = perguntas.length;
+      let acertos = 0;
 
-          const alts = normalizeAlternativas(perg.alternativas || (perg as any).opcoes);
-          const respFornecidaVal = respIndex >= 0 ? alts[respIndex] : undefined;
-          const respCorretaVal = alts[perg.resposta_correta];
+      const respostasDetalhadas = perguntas.map(perg => {
+        const respMap = p.respostas || {};
+        const resp = respMap[perg.id];
+        const respIndex = resp ? resp.resposta_index : -1;
+        const correta =
+          resp && typeof resp.correta === 'boolean'
+            ? resp.correta
+            : respIndex === perg.resposta_correta;
+        if (correta) acertos++;
 
-          return {
-            pergunta_id: perg.id,
-            enunciado: perg.enunciado,
-            norma_relacionada: perg.norma_relacionada,
-            alternativas: alts,
-            resposta_fornecida_index: respIndex,
-            resposta_correta_index: perg.resposta_correta,
-            resposta_fornecida: respIndex >= 0 ? (respFornecidaVal ? formatAlternativaText(respFornecidaVal) : 'Não respondida') : 'Sem Resposta',
-            resposta_correta: respCorretaVal ? formatAlternativaText(respCorretaVal) : '',
-            correta,
-            explicacao: perg.explicacao,
-          };
-        });
-
-        const notaFinal = total > 0 ? parseFloat(((acertos / total) * 10).toFixed(1)) : 0;
-        const notaMinimaOriginal = s.nota_minima_aprovacao ?? s.nota_minima ?? 70;
-        const notaMinimaBase10 = notaMinimaOriginal > 10 ? notaMinimaOriginal / 10 : notaMinimaOriginal;
-        const situacao: 'APROVADO' | 'NAO_APROVADO' = notaFinal >= notaMinimaBase10 ? 'APROVADO' : 'NAO_APROVADO';
-
-        // Desempenho por norma/tema
-        const temasMap = new Map<string, { total: number; acertos: number }>();
-        respostasDetalhadas.forEach(r => {
-          const t = r.norma_relacionada || 'Conhecimentos Gerais SST';
-          const curr = temasMap.get(t) || { total: 0, acertos: 0 };
-          curr.total += 1;
-          if (r.correta) curr.acertos += 1;
-          temasMap.set(t, curr);
-        });
-
-        const desempenho_por_tema = Array.from(temasMap.entries()).map(([tema, val]) => {
-          const pct = val.total > 0 ? Math.round((val.acertos / val.total) * 100) : 0;
-          return {
-            tema,
-            total: val.total,
-            acertos: val.acertos,
-            percentual: pct,
-            porcentagem: pct,
-          };
-        });
-
-        const pctAcertosGeral = total > 0 ? Math.round((acertos / total) * 100) : 0;
-
-        const sessaoId = s.sessao_id || `sess-${Date.now()}`;
-        const resultado: ResultadoAvaliacaoSST = {
-          // CORREÇÃO: id ÚNICO por sessão — inclui sessao_id para que a
-          // avaliação de uma nova sessão do mesmo Quiz não colida com a
-          // avaliação da sessão anterior (evita PDF/avaliação antiga).
-          id: `res-${s.id}-${sessaoId}-${p.id}`,
-          sala_id: s.id,
-          sessao_id: sessaoId,
-          participante_nome: p.nome,
-          participante_id: p.usuario_id || p.id,
-          matricula: p.matricula,
-          cpf: p.cpf,
-          cpf_ou_empresa: p.cpf_ou_empresa,
-          is_visitante: p.is_visitante,
-          treinamento_titulo: s.treinamento_titulo || s.nome || 'Quiz Guiado SST',
-          instrutor_nome: s.instrutor_nome,
-          data: new Date().toLocaleDateString('pt-BR'),
-          total_perguntas: total,
-          acertos,
-          erros: total - acertos,
-          nota_final: notaFinal,
-          nota_minima: notaMinimaBase10,
-          situacao,
-          desempenho_por_tema,
-          respostas_detalhadas: respostasDetalhadas,
-          // Aliases para compatibilidade total com telas e relatórios
-          cargo: p.cpf_ou_empresa || 'Colaborador SST',
-          setor_nome: 'Treinamento SST',
-          email: p.is_visitante ? 'Visitante' : 'Cadastrado',
-          empresa_id: s.empresa_id,
-          instrutor_id: s.instrutor_id,
-          sala_pin: s.pin,
-          sala_nome: s.nome || s.treinamento_titulo || 'Quiz Guiado SST',
-          data_finalizacao: new Date().toISOString(),
-          porcentagem_acertos: pctAcertosGeral,
-          questoes_corretas: acertos,
-          total_questoes: total,
-          nota_minima_aprovacao: Math.round(notaMinimaBase10 * 10),
-          // CORREÇÃO: código de documento único por sessão (evita reutilizar o
-          // PDF/nome de arquivo de uma sessão anterior do mesmo Quiz).
-          codigo_documento: `DOC-SST-${(s.id || 'SALASST').slice(-4).toUpperCase()}-${sessaoId.replace(/[^a-zA-Z0-9]/g, '').slice(-6).toUpperCase()}-${(p.id || 'PART').slice(-4).toUpperCase()}`,
-          sessao_codigo: `SST-SESSAO-${sessaoId.replace(/[^a-zA-Z0-9]/g, '').slice(-6).toUpperCase()}`,
-        };
-
-        // Salva resultado apenas se for Modo Avaliação Teórica SST
-        if (isModoAvaliacao) {
-          novosResultados.push(resultado);
-          supabaseService.upsertResultadoAvaliacaoSST(resultado);
-        }
+        const alts = normalizeAlternativas(perg.alternativas || (perg as any).opcoes);
+        const respFornecidaVal = respIndex >= 0 ? alts[respIndex] : undefined;
+        const respCorretaVal = alts[perg.resposta_correta];
 
         return {
-          ...p,
-          nota_final: notaFinal,
-          situacao,
-          concluido: true,
+          pergunta_id: perg.id,
+          enunciado: perg.enunciado,
+          norma_relacionada: perg.norma_relacionada,
+          alternativas: alts,
+          resposta_fornecida_index: respIndex,
+          resposta_correta_index: perg.resposta_correta,
+          resposta_fornecida: respIndex >= 0 ? (respFornecidaVal ? formatAlternativaText(respFornecidaVal) : 'Não respondida') : 'Sem Resposta',
+          resposta_correta: respCorretaVal ? formatAlternativaText(respCorretaVal) : '',
+          correta,
+          explicacao: perg.explicacao,
         };
       });
 
-      if (isModoAvaliacao && novosResultados.length > 0) {
-        const novosIds = new Set(novosResultados.map(r => r.id));
-        setResultadosAvaliacaoSST(prev => [...novosResultados, ...prev.filter(r => !novosIds.has(r.id))]);
-      }
+      const notaFinal = total > 0 ? parseFloat(((acertos / total) * 10).toFixed(1)) : 0;
+      const notaMinimaOriginal = salaTarget.nota_minima_aprovacao ?? salaTarget.nota_minima ?? 70;
+      const notaMinimaBase10 = notaMinimaOriginal > 10 ? notaMinimaOriginal / 10 : notaMinimaOriginal;
+      const situacao: 'APROVADO' | 'NAO_APROVADO' = notaFinal >= notaMinimaBase10 ? 'APROVADO' : 'NAO_APROVADO';
 
-      const salaEncerrada: SalaQuizGuiado = {
-        ...s,
-        status: 'concluido',
-        estado_apresentacao: 'CONCLUIDO',
-        participantes: participantesProcessados,
+      const temasMap = new Map<string, { total: number; acertos: number }>();
+      respostasDetalhadas.forEach(r => {
+        const t = r.norma_relacionada || 'Conhecimentos Gerais SST';
+        const curr = temasMap.get(t) || { total: 0, acertos: 0 };
+        curr.total += 1;
+        if (r.correta) curr.acertos += 1;
+        temasMap.set(t, curr);
+      });
+
+      const desempenho_por_tema = Array.from(temasMap.entries()).map(([tema, val]) => {
+        const pct = val.total > 0 ? Math.round((val.acertos / val.total) * 100) : 0;
+        return {
+          tema,
+          total: val.total,
+          acertos: val.acertos,
+          percentual: pct,
+          porcentagem: pct,
+        };
+      });
+
+      const pctAcertosGeral = total > 0 ? Math.round((acertos / total) * 100) : 0;
+      const sessaoId = salaTarget.sessao_id || `sess-${Date.now()}`;
+      const resultado: ResultadoAvaliacaoSST = {
+        id: `res-${salaTarget.id}-${sessaoId}-${p.id}`,
+        sala_id: salaTarget.id,
+        sessao_id: sessaoId,
+        participante_nome: p.nome,
+        participante_id: p.usuario_id || p.id,
+        matricula: p.matricula,
+        cpf: p.cpf,
+        cpf_ou_empresa: p.cpf_ou_empresa,
+        is_visitante: p.is_visitante,
+        treinamento_titulo: salaTarget.treinamento_titulo || salaTarget.nome || 'Quiz Guiado SST',
+        instrutor_nome: salaTarget.instrutor_nome,
+        data: new Date().toLocaleDateString('pt-BR'),
+        total_perguntas: total,
+        acertos,
+        erros: total - acertos,
+        nota_final: notaFinal,
+        nota_minima: notaMinimaBase10,
+        situacao,
+        desempenho_por_tema,
+        respostas_detalhadas: respostasDetalhadas,
+        cargo: p.cpf_ou_empresa || 'Colaborador SST',
+        setor_nome: 'Treinamento SST',
+        email: p.is_visitante ? 'Visitante' : 'Cadastrado',
+        empresa_id: salaTarget.empresa_id,
+        instrutor_id: salaTarget.instrutor_id,
+        sala_pin: salaTarget.pin,
+        sala_nome: salaTarget.nome || salaTarget.treinamento_titulo || 'Quiz Guiado SST',
+        data_finalizacao: new Date().toISOString(),
+        porcentagem_acertos: pctAcertosGeral,
+        questoes_corretas: acertos,
+        total_questoes: total,
+        nota_minima_aprovacao: Math.round(notaMinimaBase10 * 10),
+        codigo_documento: `DOC-SST-${(salaTarget.id || 'SALASST').slice(-4).toUpperCase()}-${sessaoId.replace(/[^a-zA-Z0-9]/g, '').slice(-6).toUpperCase()}-${(p.id || 'PART').slice(-4).toUpperCase()}`,
+        sessao_codigo: `SST-SESSAO-${sessaoId.replace(/[^a-zA-Z0-9]/g, '').slice(-6).toUpperCase()}`,
       };
 
-      supabaseService.upsertSalaQuizGuiado(salaEncerrada);
-
-      // CORREÇÃO (auditoria Quiz Guiado/Avaliação): ao encerrar a sala,
-      // remove as chaves locais de participante DESTA sessão (quiz_part_id_* /
-      // quiz_participante_nome_*). Isso impede que uma NOVA sessão do mesmo
-      // Quiz (com novo PIN/sessao_id) reutilize o participante/resultado
-      // antigo via localStorage. O histórico da avaliação já foi persistido
-      // em resultadosAvaliacaoSST (não é apagado — apenas o vínculo local de
-      // participante da sessão é limpo).
-      try {
-        Object.keys(localStorage).forEach(k => {
-          if (k.startsWith(`quiz_part_id_${s.id}_`)) localStorage.removeItem(k);
-          if (k.startsWith(`quiz_participante_nome_`) && k.includes(s.sessao_id || 'sess-')) {
-            localStorage.removeItem(k);
-          }
-        });
-        Object.keys(sessionStorage).forEach(k => {
-          if (k.startsWith(`quiz_part_id_${s.id}_`)) sessionStorage.removeItem(k);
-        });
-      } catch (err) {
-        console.warn('Falha ao limpar chaves locais de participante da sessão:', err);
+      if (isModoAvaliacao) {
+        novosResultados.push(resultado);
       }
 
-      return salaEncerrada;
-    }));
+      return {
+        ...p,
+        nota_final: notaFinal,
+        situacao,
+        concluido: true,
+      };
+    });
+
+    const salaEncerrada: SalaQuizGuiado = {
+      ...salaTarget,
+      status: 'concluido',
+      estado_apresentacao: 'CONCLUIDO',
+      participantes: participantesProcessados,
+    };
+
+    // Atualiza estado local no React de forma síncrona
+    setSalasQuizGuiado(prev => prev.map(s => s.id === salaId ? salaEncerrada : s));
+
+    if (isModoAvaliacao && novosResultados.length > 0) {
+      const novosIds = new Set(novosResultados.map(r => r.id));
+      setResultadosAvaliacaoSST(prev => [...novosResultados, ...prev.filter(r => !novosIds.has(r.id))]);
+    }
+
+    // Persistência assíncrona garantida no Supabase (primeiro a sala, depois os laudos associados)
+    await supabaseService.upsertSalaQuizGuiado(salaEncerrada);
+    if (isModoAvaliacao && novosResultados.length > 0) {
+      for (const resItem of novosResultados) {
+        await supabaseService.upsertResultadoAvaliacaoSST(resItem);
+      }
+    }
+
+    try {
+      Object.keys(localStorage).forEach(k => {
+        if (k.startsWith(`quiz_part_id_${salaTarget.id}_`)) localStorage.removeItem(k);
+        if (k.startsWith(`quiz_participante_nome_`) && k.includes(salaTarget.sessao_id || 'sess-')) {
+          localStorage.removeItem(k);
+        }
+      });
+      Object.keys(sessionStorage).forEach(k => {
+        if (k.startsWith(`quiz_part_id_${salaTarget.id}_`)) sessionStorage.removeItem(k);
+      });
+    } catch (err) {
+      console.warn('Falha ao limpar chaves locais de participante da sessão:', err);
+    }
   };
 
   const avancarPerguntaQuizGuiado = (salaId: string) => {

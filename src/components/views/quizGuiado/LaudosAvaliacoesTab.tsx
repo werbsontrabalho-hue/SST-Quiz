@@ -46,6 +46,8 @@ export const LaudosAvaliacoesTab: React.FC<LaudosAvaliacoesTabProps> = ({
   const [buscaGeral, setBuscaGeral] = useState('');
   const [filtroSituacao, setFiltroSituacao] = useState<'todos' | 'aprovados' | 'reprovados'>('todos');
   const [ordenacao, setOrdenacao] = useState<'recente' | 'antigo' | 'maior_nota' | 'menor_nota' | 'nome'>('recente');
+  const [dataInicio, setDataInicio] = useState('');
+  const [dataFim, setDataFim] = useState('');
 
   // Estado da modal de confirmação de exclusão
   const [laudoParaExcluir, setLaudoParaExcluir] = useState<ResultadoAvaliacaoSST | null>(null);
@@ -89,11 +91,30 @@ export const LaudosAvaliacoesTab: React.FC<LaudosAvaliacoesTabProps> = ({
     });
   }, [resultadosAvaliacaoSST, salasQuizGuiado, currentUser, isSuperAdmin, isAdminEmpresa]);
 
-  // Aplicação da busca geral e filtros
+  // Aplicação da busca geral e filtros (incluindo filtro por data)
   const laudosFiltrados = useMemo(() => {
     let list = [...laudosVisiveis];
 
-    // Busca geral (nome do usuário, nome da sala, matrícula, CPF, código)
+    // 1. Filtro por intervalo de datas (Data Início / Data Fim)
+    if (dataInicio) {
+      list = list.filter(r => {
+        const rawData = r.data_finalizacao || r.data || '';
+        if (!rawData) return false;
+        const isoDate = rawData.split('T')[0];
+        return isoDate >= dataInicio;
+      });
+    }
+
+    if (dataFim) {
+      list = list.filter(r => {
+        const rawData = r.data_finalizacao || r.data || '';
+        if (!rawData) return false;
+        const isoDate = rawData.split('T')[0];
+        return isoDate <= dataFim;
+      });
+    }
+
+    // 2. Busca geral (nome do usuário, treinamento, CPF, código, PIN ou data)
     if (buscaGeral.trim()) {
       const q = buscaGeral.toLowerCase().trim();
       list = list.filter(r => {
@@ -107,6 +128,20 @@ export const LaudosAvaliacoesTab: React.FC<LaudosAvaliacoesTabProps> = ({
         const pin = (r.sala_pin || '').toLowerCase();
         const inst = (r.instrutor_nome || '').toLowerCase();
 
+        // Formatação da data para pesquisa em texto (ex: 22/08/2026, 2026-08-22, agosto 2026)
+        const rawData = r.data_finalizacao || r.data || '';
+        let dataFormattedPt = '';
+        let dataIso = '';
+        let dataExtensa = '';
+        if (rawData) {
+          dataIso = rawData.split('T')[0];
+          const dObj = new Date(rawData);
+          if (!isNaN(dObj.getTime())) {
+            dataFormattedPt = dObj.toLocaleDateString('pt-BR');
+            dataExtensa = dObj.toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' }).toLowerCase();
+          }
+        }
+
         return (
           nomePart.includes(q) ||
           nomeSala.includes(q) ||
@@ -116,19 +151,22 @@ export const LaudosAvaliacoesTab: React.FC<LaudosAvaliacoesTabProps> = ({
           codDoc.includes(q) ||
           codSess.includes(q) ||
           pin.includes(q) ||
-          inst.includes(q)
+          inst.includes(q) ||
+          dataFormattedPt.includes(q) ||
+          dataIso.includes(q) ||
+          dataExtensa.includes(q)
         );
       });
     }
 
-    // Filtro por situação
+    // 3. Filtro por situação (Aprovado / Não Aprovado)
     if (filtroSituacao === 'aprovados') {
       list = list.filter(r => r.situacao === 'APROVADO');
     } else if (filtroSituacao === 'reprovados') {
       list = list.filter(r => r.situacao === 'NAO_APROVADO');
     }
 
-    // Ordenação
+    // 4. Ordenação
     list.sort((a, b) => {
       if (ordenacao === 'recente') {
         const dataA = a.data_finalizacao || a.data || '';
@@ -153,7 +191,7 @@ export const LaudosAvaliacoesTab: React.FC<LaudosAvaliacoesTabProps> = ({
     });
 
     return list;
-  }, [laudosVisiveis, buscaGeral, filtroSituacao, ordenacao]);
+  }, [laudosVisiveis, buscaGeral, filtroSituacao, ordenacao, dataInicio, dataFim]);
 
   // Estatísticas do conjunto visível
   const stats = useMemo(() => {
@@ -248,15 +286,47 @@ export const LaudosAvaliacoesTab: React.FC<LaudosAvaliacoesTabProps> = ({
               type="text"
               value={buscaGeral}
               onChange={(e) => setBuscaGeral(e.target.value)}
-              placeholder="Buscar por nome do usuário, nome da sala/treinamento, matrícula, CPF, código ou PIN..."
-              className="w-full bg-slate-950 border border-white/15 rounded-2xl pl-10 pr-4 py-2.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-all shadow-inner"
+              placeholder="Buscar por nome, treinamento, CPF, código, PIN ou data (ex: 22/08/2026)..."
+              className="w-full bg-slate-950 border border-white/15 rounded-2xl pl-10 pr-16 py-2.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-all shadow-inner"
             />
             {buscaGeral && (
               <button
                 onClick={() => setBuscaGeral('')}
-                className="absolute right-3 top-2.5 text-xs text-slate-400 hover:text-white px-2 py-0.5 rounded-lg bg-white/10"
+                className="absolute right-3 top-2 text-xs text-slate-400 hover:text-white px-2 py-1 rounded-lg bg-white/10"
               >
                 Limpar
+              </button>
+            )}
+          </div>
+
+          {/* Filtro por Intervalo de Datas (Data Início / Data Fim) */}
+          <div className="flex items-center gap-2 bg-slate-950 p-1.5 rounded-2xl border border-white/10 shrink-0">
+            <div className="flex items-center space-x-1 pl-1 text-[11px] font-bold text-slate-400">
+              <Calendar className="w-3.5 h-3.5 text-emerald-400" />
+              <span className="hidden sm:inline">Período:</span>
+            </div>
+            <input
+              type="date"
+              value={dataInicio}
+              onChange={(e) => setDataInicio(e.target.value)}
+              title="Data Inicial"
+              className="bg-slate-900 border border-white/15 rounded-xl px-2 py-1 text-[11px] text-slate-200 focus:outline-none focus:border-emerald-500"
+            />
+            <span className="text-slate-500 text-xs">até</span>
+            <input
+              type="date"
+              value={dataFim}
+              onChange={(e) => setDataFim(e.target.value)}
+              title="Data Final"
+              className="bg-slate-900 border border-white/15 rounded-xl px-2 py-1 text-[11px] text-slate-200 focus:outline-none focus:border-emerald-500"
+            />
+            {(dataInicio || dataFim) && (
+              <button
+                onClick={() => { setDataInicio(''); setDataFim(''); }}
+                className="text-[10px] font-bold text-rose-400 hover:text-rose-300 px-1.5 py-0.5 rounded-lg bg-rose-500/10 border border-rose-500/20"
+                title="Limpar filtro de data"
+              >
+                Limpar Data
               </button>
             )}
           </div>
@@ -312,9 +382,17 @@ export const LaudosAvaliacoesTab: React.FC<LaudosAvaliacoesTabProps> = ({
           </div>
         </div>
 
-        {buscaGeral && (
-          <div className="text-[11px] text-slate-400 flex items-center space-x-1 pt-1">
-            <span>Resultados encontrados para "<strong className="text-white">{buscaGeral}</strong>":</span>
+        {(buscaGeral || dataInicio || dataFim) && (
+          <div className="text-[11px] text-slate-400 flex items-center space-x-1.5 pt-1 flex-wrap">
+            <span>
+              Resultados encontrados
+              {buscaGeral && <> para "<strong className="text-white">{buscaGeral}</strong>"</>}
+              {(dataInicio || dataFim) && (
+                <> no período <strong className="text-emerald-400">
+                  {dataInicio ? new Date(dataInicio + 'T00:00:00').toLocaleDateString('pt-BR') : 'Início'} até {dataFim ? new Date(dataFim + 'T00:00:00').toLocaleDateString('pt-BR') : 'Hoje'}
+                </strong></>
+              )}:
+            </span>
             <span className="font-bold text-emerald-400">{laudosFiltrados.length} laudo(s)</span>
           </div>
         )}
@@ -326,8 +404,8 @@ export const LaudosAvaliacoesTab: React.FC<LaudosAvaliacoesTabProps> = ({
           <FileText className="w-12 h-12 text-slate-600 mx-auto stroke-1" />
           <h3 className="text-base font-bold text-white">Nenhum laudo de avaliação encontrado</h3>
           <p className="text-xs text-slate-400 max-w-md mx-auto">
-            {buscaGeral || filtroSituacao !== 'todos'
-              ? 'Tente alterar ou limpar os termos da busca e filtros acima para localizar o laudo desejado.'
+            {buscaGeral || dataInicio || dataFim || filtroSituacao !== 'todos'
+              ? 'Tente alterar ou limpar os termos da busca, período de datas e filtros acima para localizar o laudo desejado.'
               : 'Assim que avaliações teóricas de SST forem realizadas no Quiz Guiado, os laudos em PDF aparecerão aqui permanentemente.'}
           </p>
         </div>
