@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { formatAlternativaText, normalizeAlternativas } from '../../../utils/questionHelpers';
 import html2canvas from 'html2canvas-pro';
 import { jsPDF } from 'jspdf';
@@ -411,6 +412,11 @@ export const ProvaAvaliacaoPDFModal: React.FC<ProvaAvaliacaoPDFModalProps> = ({
         return null;
       }
 
+      // Aguarda o carregamento completo das fontes no navegador antes de capturar o canvas em produção
+      if (document.fonts && document.fonts.ready) {
+        await document.fonts.ready;
+      }
+
       const pdf = new jsPDF({
         orientation: 'portrait',
         unit: 'mm',
@@ -426,10 +432,58 @@ export const ProvaAvaliacaoPDFModal: React.FC<ProvaAvaliacaoPDFModalProps> = ({
         const canvas = await html2canvas(pageEl, {
           scale: escala,
           useCORS: true,
-          allowTaint: true,
+          allowTaint: false,
           backgroundColor: '#ffffff',
           logging: false,
-          windowWidth: 1000,
+          width: pageEl.offsetWidth || 794,
+          height: pageEl.offsetHeight || 1123,
+          windowWidth: pageEl.offsetWidth || 794,
+          windowHeight: pageEl.offsetHeight || 1123,
+          onclone: (clonedDoc) => {
+            // Extrai e injeta TODAS as regras CSS do documento principal em um elemento <style> síncrono
+            const inlineStyle = clonedDoc.createElement('style');
+            let combinedCss = '';
+
+            try {
+              Array.from(document.styleSheets).forEach((sheet) => {
+                try {
+                  const rules = sheet.cssRules || sheet.rules;
+                  if (rules) {
+                    Array.from(rules).forEach((rule) => {
+                      combinedCss += rule.cssText + '\n';
+                    });
+                  }
+                } catch (e) {
+                  // Ignora folhas de estilo externas restringidas por CORS
+                }
+              });
+            } catch (e) {
+              console.warn('Erro ao ler styleSheets do documento:', e);
+            }
+
+            Array.from(document.querySelectorAll('style')).forEach((st) => {
+              if (st.textContent) {
+                combinedCss += st.textContent + '\n';
+              }
+            });
+
+            Array.from(document.querySelectorAll('link[rel="stylesheet"]')).forEach((lk) => {
+              clonedDoc.head.appendChild(lk.cloneNode(true));
+            });
+
+            inlineStyle.textContent = combinedCss;
+            clonedDoc.head.appendChild(inlineStyle);
+
+            // Força a tipografia limpa sans-serif e as dimensões A4 no contêiner clonado
+            const clonedPages = clonedDoc.querySelectorAll<HTMLElement>('.prova-pdf-page-container');
+            clonedPages.forEach((p) => {
+              p.style.fontFamily = "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif";
+              p.style.width = '210mm';
+              p.style.boxSizing = 'border-box';
+              p.style.background = '#ffffff';
+              p.style.color = '#0f172a';
+            });
+          }
         });
 
         const imgData = paraEmail 
@@ -654,17 +708,21 @@ export const ProvaAvaliacaoPDFModal: React.FC<ProvaAvaliacaoPDFModalProps> = ({
   const codigoDocumento = resultado.codigo_documento || `DOC-SST-${(resultado.sala_id || 'SALASST').slice(-6).toUpperCase()}-${(resultado.id || 'PART').slice(-4).toUpperCase()}`;
   const codigoSessao = resultado.sessao_codigo || `SST-SESSAO-${(resultado.sala_id || 'SALASST').slice(-6).toUpperCase()}`;
 
-  return (
+  return createPortal(
     <div className="sst-laudo-modal-backdrop fixed inset-0 bg-slate-950/85 backdrop-blur-md z-50 overflow-y-auto p-2 sm:p-6 flex flex-col items-center font-sans">
       
       {/* =========================================================================
-          ESTILOS DE IMPRESSÃO A4 PROFISSIONAL (PÁGINA POR PÁGINA)
+          ESTILOS DE IMPRESSÃO A4 PROFISSIONAL ISOLADA (PÁGINA POR PÁGINA)
       ========================================================================= */}
       <style>{`
         @media print {
           @page {
             size: A4 portrait;
             margin: 0mm !important;
+          }
+          /* Oculta COMPLETAMENTE o aplicativo React (#root) durante a impressão */
+          #root {
+            display: none !important;
           }
           html, body {
             margin: 0 !important;
@@ -677,32 +735,38 @@ export const ProvaAvaliacaoPDFModal: React.FC<ProvaAvaliacaoPDFModalProps> = ({
             min-height: auto !important;
             overflow: visible !important;
           }
-          /* Remove backdrop escuro e garante fluxo A4 */
+          /* Remove o backdrop escuro e fixa o laudo no topo da página impressa */
           .sst-laudo-modal-backdrop {
-            position: static !important;
+            position: absolute !important;
+            left: 0 !important;
+            top: 0 !important;
+            width: 210mm !important;
+            height: auto !important;
+            min-height: auto !important;
             background: #ffffff !important;
             padding: 0 !important;
             margin: 0 !important;
             overflow: visible !important;
             inset: auto !important;
             display: block !important;
-            width: 100% !important;
-            height: auto !important;
-            min-height: auto !important;
             backdrop-filter: none !important;
             -webkit-backdrop-filter: none !important;
+            border: none !important;
+            box-shadow: none !important;
           }
-          .print-hidden, nav, header, footer, button, .no-print {
+          .print-hidden, nav, header, footer, button, .no-print, input, select, textarea {
             display: none !important;
+            visibility: hidden !important;
           }
           #impressao-laudo-completo-root {
             display: block !important;
-            position: static !important;
-            width: 100% !important;
-            margin: 0 auto !important;
+            position: relative !important;
+            left: 0 !important;
+            top: 0 !important;
+            width: 210mm !important;
+            margin: 0 !important;
             padding: 0 !important;
             background: #ffffff !important;
-            overflow: visible !important;
           }
           .prova-pdf-page-container {
             width: 210mm !important;
@@ -710,18 +774,22 @@ export const ProvaAvaliacaoPDFModal: React.FC<ProvaAvaliacaoPDFModalProps> = ({
             max-height: 297mm !important;
             height: 297mm !important;
             padding: 12mm 14mm !important;
-            margin: 0 auto !important;
+            margin: 0 !important;
             page-break-after: always !important;
             break-after: page !important;
+            page-break-inside: avoid !important;
+            break-inside: avoid !important;
             box-sizing: border-box !important;
             overflow: hidden !important;
             background: #ffffff !important;
+            color: #0f172a !important;
             display: flex !important;
             flex-direction: column !important;
             justify-content: space-between !important;
             border: none !important;
             box-shadow: none !important;
             border-radius: 0 !important;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif !important;
           }
           .prova-pdf-page-container:last-child {
             page-break-after: auto !important;
@@ -1104,7 +1172,8 @@ export const ProvaAvaliacaoPDFModal: React.FC<ProvaAvaliacaoPDFModalProps> = ({
               key={pIdx}
               className="prova-pdf-page-container w-full max-w-[210mm] min-h-[297mm] bg-white text-slate-900 p-8 sm:p-10 rounded-2xl shadow-2xl border border-slate-200 flex flex-col justify-between"
               style={{
-                boxSizing: 'border-box'
+                boxSizing: 'border-box',
+                fontFamily: "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif"
               }}
             >
               {/* TOPO DA PÁGINA */}
@@ -1608,6 +1677,7 @@ export const ProvaAvaliacaoPDFModal: React.FC<ProvaAvaliacaoPDFModalProps> = ({
         </div>
       )}
 
-    </div>
+    </div>,
+    document.body
   );
 };
