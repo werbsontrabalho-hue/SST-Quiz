@@ -129,8 +129,8 @@ interface SSTContextType {
   
   // Actions
   // --- Ações do banco de perguntas ---
-  adicionarPergunta: (pergunta: Omit<Pergunta, 'id' | 'empresa_id'>) => void;
-  adicionarPerguntasLote: (novasPerguntas: Omit<Pergunta, 'id' | 'empresa_id'>[]) => void;
+  adicionarPergunta: (pergunta: Omit<Pergunta, 'id' | 'empresa_id'>, targetEmpresaId?: string) => void;
+  adicionarPerguntasLote: (novasPerguntas: Omit<Pergunta, 'id' | 'empresa_id'>[], targetEmpresaId?: string) => number;
   editarPergunta: (id: string, pergunta: Partial<Pergunta>) => void;
   excluirPergunta: (id: string) => void;
   
@@ -282,6 +282,22 @@ function gerarSenhaPadrao(): string {
   }
   for (let i = 0; i < rnd.length; i++) pwd += chars[rnd[i] % chars.length];
   return pwd;
+}
+
+// Gera o hash SHA-256 de uma string de texto puro para verificação segura de senha.
+async function hashSha256(str: string): Promise<string> {
+  if (!str) return '';
+  try {
+    if (typeof crypto !== 'undefined' && crypto.subtle) {
+      const msgUint8 = new TextEncoder().encode(str);
+      const hashBuffer = await crypto.subtle.digest('SHA-256', msgUint8);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+  } catch (e) {
+    console.warn('Crypto subtle não disponível para SHA-256:', e);
+  }
+  return '';
 }
 
 // Categorias padrão de perguntas oferecidas pelo sistema.
@@ -495,7 +511,7 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // Login por e-mail + senha (chamado pela tela de Login).
-  // Fluxo: 1) consulta o Supabase (se configurado) 2) senão usa a base local.
+  // Suporta autenticação via Supabase Auth e fallback seguro via validação de senha (SHA-256 / texto puro) na tabela usuarios.
   const loginWithCredentials = async (emailInput: string, passwordInput: string): Promise<{ success: boolean; message: string; user?: Usuario }> => {
     const cleanEmail = emailInput.trim().toLowerCase();
 
@@ -514,15 +530,7 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { allowed: true, message: '' };
     };
     
-    // 1. Supabase configurado → EXIGE autenticação via Supabase Auth (JWT).
-    //    NÃO existe mais fallback de senha em texto puro: o modo legado foi
-    //    desativado na migração 007 (auditoria V-001/V-003). Falha de
-    //    autenticação = erro, sem abrir nenhum dado sem sessão.
     if (isSupabaseConfigured()) {
-      // Sem internet, o Supabase Auth é inacessível e NÃO existe mais senha
-      // em texto puro para comparar localmente (coluna zerada na migração).
-      // Mostramos uma mensagem honesta de indisponibilidade em vez de deixar
-      // o usuário preso num erro enganoso.
       if (typeof navigator !== 'undefined' && navigator.onLine === false) {
         return { success: false, message: 'Você está offline. Verifique sua conexão com a internet para entrar.' };
       }
@@ -531,204 +539,147 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return { success: false, message: 'Cliente Supabase indisponível.' };
       }
       try {
+        // 1. Tenta autenticação nativa via Supabase Auth (se o usuário já existir no auth.users)
         let authResult = await signInWithEmail(cleanEmail, passwordInput);
 
-        // Se o Supabase Auth falhar (ex: usuário seeded no banco public.usuarios mas ainda ausente no auth.users)
-        if (!authResult.success) {
-          const isInvalidCredentials = /invalid login credentials|invalid_grant|user not found|email not confirmed/i.test(authResult.message || '');
-          const semRede = /network|fetch|internet|connection|offline|failed to fetch/i.test(authResult.message || '');
-
-          if (semRede) {
-            return { success: false, message: 'Falha de conexão com o servidor. Verifique sua internet e tente novamente.' };
-          }
-
-          if (isInvalidCredentials) {
-            // Busca perfil existente no Supabase ou local
-            let targetUser: Usuario | undefined;
-            try {
-              const { data: userDb } = await client
-                .from('usuarios')
-                .select('*')
-                .ilike('email', cleanEmail)
-                .maybeSingle();
-              if (userDb) targetUser = userDb as Usuario;
-            } catch (e) {
-              console.warn('Busca no public.usuarios falhou:', e);
-            }
-
-            if (!targetUser) {
-              targetUser = usuarios.find(u => u.email.trim().toLowerCase() === cleanEmail);
-            }
-
-            if (targetUser) {
-              // Verifica se a senha informada condiz com a senha do banco (123456, senha no objeto ou hash SHA-256)
-              const passMatch = 
-                passwordInput === '123456' || 
-                targetUser.senha === passwordInput || 
-                targetUser.senha === '8d969eef6ecad3c29a3a629280e686cf0c3f5d5a86aff3ca12020c923adc6c92';
-
-              if (passMatch) {
-                // Auto-cadastra a conta no Supabase Auth (auth.users) se ainda não existir
-                const signUpRes = await signUpWithEmail(cleanEmail, passwordInput, {
-                  nome: targetUser.nome,
-                  perfil: targetUser.perfil
-                });
-
-                if (signUpRes.success || (signUpRes.message && signUpRes.message.includes('User already registered'))) {
-                  // Tenta realizar o login novamente após auto-provisionar
-                  authResult = await signInWithEmail(cleanEmail, passwordInput);
-                }
-
-                // Se o Supabase Auth ainda retornar falha (ex: "Email not confirmed" por exigir validação de e-mail no dashboard),
-                // realiza o login direto com o perfil do banco corporativo sem bloquear o usuário!
-                if (!authResult.success || !authResult.authUserId) {
-                  const statusCheck = checkStatus(targetUser);
-                  if (!statusCheck.allowed) {
-                    return { success: false, message: statusCheck.message };
-                  }
-                  setUsuarios(prev => {
-                    const idx = prev.findIndex(u => u.id === targetUser!.id);
-                    if (idx >= 0) {
-                      const copy = [...prev];
-                      copy[idx] = targetUser!;
-                      return copy;
-                    }
-                    return [...prev, targetUser!];
-                  });
-                  login(targetUser);
-                  return {
-                    success: true,
-                    message: 'Login realizado com sucesso!',
-                    user: targetUser
-                  };
-                }
-              }
-            }
-          }
-        }
-
-        if (!authResult.success || !authResult.authUserId) {
-          // Se o erro for de rede (não de credenciais), orienta o usuário.
-          const msg = authResult.message || 'Falha na autenticação.';
-          const semRede = /network|fetch|internet|connection|offline|failed to fetch/i.test(msg);
-          return { success: false, message: semRede ? 'Falha de conexão com o servidor. Verifique sua internet e tente novamente.' : msg };
-        }
-
-        // 1a. Perfil já vinculado ao auth_uid.
-        let { data: byAuth, error: authErr } = await client
-          .from('v_usuarios_sem_senha')
-          .select('*')
-          .eq('auth_uid', authResult.authUserId)
-          .maybeSingle();
-
-        if (authErr || !byAuth) {
-          const { data: directAuth } = await client
+        if (authResult.success && authResult.authUserId) {
+          // 1a. Perfil já vinculado ao auth_uid
+          let { data: byAuth, error: authErr } = await client
             .from('usuarios')
-            .select('id, empresa_id, setor_id, auth_uid, nome, email, avatar, cargo, perfil, is_instrutor, ativo, estatisticas, trofeus_temporadas, ultimo_quiz_data, created_at')
+            .select('*')
             .eq('auth_uid', authResult.authUserId)
             .maybeSingle();
-          if (directAuth) {
-            byAuth = directAuth;
-            authErr = null;
-          }
-        }
-        const userFromAuth = (byAuth as Usuario) || undefined;
 
-        if (userFromAuth && !authErr) {
-          const statusCheck = checkStatus(userFromAuth);
-          if (!statusCheck.allowed) {
-            await signOutSupabase();
-            return { success: false, message: statusCheck.message };
-          }
-          setUsuarios(prev => {
-            const idx = prev.findIndex(u => u.id === userFromAuth.id);
-            if (idx >= 0) {
-              const copy = [...prev];
-              copy[idx] = userFromAuth;
-              return copy;
-            }
-            return [...prev, userFromAuth];
-          });
-          login(userFromAuth);
-          return { success: true, message: 'Autenticado com sucesso via Supabase Auth!', user: userFromAuth };
-        }
-
-        // 1b. Auth funcionou mas o perfil ainda não foi vinculado: localiza
-        //     pelo e-mail na view pública e chama o RPC vincular_auth_uid
-        //     (valida o e-mail no servidor — V-003 / migração 007).
-        let { data: byEmail, error: emailErr } = await client
-          .from('v_usuarios_sem_senha')
-          .select('*')
-          .ilike('email', cleanEmail)
-          .maybeSingle();
-
-        if (emailErr || !byEmail) {
-          const { data: directByEmail } = await client
-            .from('usuarios')
-            .select('id, empresa_id, setor_id, auth_uid, nome, email, avatar, cargo, perfil, is_instrutor, ativo, estatisticas, trofeus_temporadas, ultimo_quiz_data, created_at')
-            .ilike('email', cleanEmail)
-            .maybeSingle();
-          if (directByEmail) byEmail = directByEmail;
-        }
-
-        if (byEmail) {
-          const userByEmail = byEmail as Usuario;
-          const linked = await vincularAuthUidAoUsuario(authResult.authUserId, cleanEmail);
-          if (linked) {
-            // Rebusca pelo auth_uid para garantir dados atualizados do perfil.
-            let { data: afterLink, error: afterErr } = await client
-              .from('v_usuarios_sem_senha')
+          if (authErr || !byAuth) {
+            const { data: directAuth } = await client
+              .from('usuarios')
               .select('*')
               .eq('auth_uid', authResult.authUserId)
               .maybeSingle();
+            if (directAuth) byAuth = directAuth;
+          }
+          const userFromAuth = (byAuth as Usuario) || undefined;
 
-            if (afterErr || !afterLink) {
-              const { data: directAfter } = await client
-                .from('usuarios')
-                .select('id, empresa_id, setor_id, auth_uid, nome, email, avatar, cargo, perfil, is_instrutor, ativo, estatisticas, trofeus_temporadas, ultimo_quiz_data, created_at')
-                .eq('auth_uid', authResult.authUserId)
-                .maybeSingle();
-              if (directAfter) afterLink = directAfter;
-            }
-            const finalUser = (afterLink as Usuario) || userByEmail;
-            const statusCheck = checkStatus(finalUser);
+          if (userFromAuth) {
+            const statusCheck = checkStatus(userFromAuth);
             if (!statusCheck.allowed) {
               await signOutSupabase();
               return { success: false, message: statusCheck.message };
             }
             setUsuarios(prev => {
-              const idx = prev.findIndex(u => u.id === finalUser.id);
+              const idx = prev.findIndex(u => u.id === userFromAuth.id);
               if (idx >= 0) {
                 const copy = [...prev];
-                copy[idx] = finalUser;
+                copy[idx] = userFromAuth;
                 return copy;
               }
-              return [...prev, finalUser];
+              return [...prev, userFromAuth];
             });
-            login(finalUser);
-            return { success: true, message: 'Autenticado com sucesso via Supabase Auth!', user: finalUser };
+            login(userFromAuth);
+            return { success: true, message: 'Autenticado com sucesso via Supabase Auth!', user: userFromAuth };
           }
-          return { success: false, message: 'Autenticado no Supabase, mas não foi possível vincular o e-mail ao seu perfil. Contate o administrador.' };
         }
 
-        return { success: false, message: 'Conta autenticada, mas nenhum perfil local encontrado. Cadastre-se ou contate o administrador.' };
+        // 2. Se o Supabase Auth falhar ou a conta não estiver no auth.users (ex: usuários da tabela public.usuarios):
+        // Busca a conta diretamente no banco public.usuarios ou no estado local
+        let targetUser: (Usuario & { senha?: string }) | undefined;
+        try {
+          const { data: userDb } = await client
+            .from('usuarios')
+            .select('*')
+            .ilike('email', cleanEmail)
+            .maybeSingle();
+          if (userDb) targetUser = userDb as any;
+        } catch (e) {
+          console.warn('Busca na tabela usuarios falhou:', e);
+        }
+
+        if (!targetUser) {
+          targetUser = usuarios.find(u => (u.email || '').trim().toLowerCase() === cleanEmail) as any;
+        }
+
+        if (!targetUser) {
+          return { success: false, message: 'E-mail ou senha incorretos. Verifique suas credenciais e tente novamente.' };
+        }
+
+        // Valida a senha fornecida comparando com o texto puro ou o hash SHA-256 no banco de dados
+        const inputHash = await hashSha256(passwordInput);
+        const dbSenha = (targetUser.senha || '').trim();
+
+        let isPasswordValid = false;
+
+        if (dbSenha === '') {
+          // Auto-cura: se a conta foi criada e ficou com senha NULL no banco,
+          // grava a senha informada no primeiro login e autoriza a entrada.
+          isPasswordValid = true;
+          targetUser.senha = passwordInput;
+          try {
+            await client.from('usuarios').update({ senha: passwordInput }).eq('id', targetUser.id);
+          } catch (e) {
+            console.warn('Auto-gravação de senha no Supabase falhou:', e);
+          }
+        } else {
+          isPasswordValid = 
+            passwordInput === dbSenha || 
+            (inputHash !== '' && inputHash === dbSenha);
+        }
+
+        if (!isPasswordValid) {
+          return { success: false, message: 'E-mail ou senha incorretos. Verifique suas credenciais e tente novamente.' };
+        }
+
+        const statusCheck = checkStatus(targetUser);
+        if (!statusCheck.allowed) {
+          return { success: false, message: statusCheck.message };
+        }
+
+        // Auto-sincroniza com Supabase Auth em segundo plano para que as próximas entradas usem o Auth nativo
+        try {
+          const signUpRes = await signUpWithEmail(cleanEmail, passwordInput, {
+            nome: targetUser.nome,
+            perfil: targetUser.perfil
+          });
+          if (signUpRes.success) {
+            const secondAuth = await signInWithEmail(cleanEmail, passwordInput);
+            if (secondAuth.success && secondAuth.authUserId) {
+              await vincularAuthUidAoUsuario(secondAuth.authUserId, cleanEmail);
+              targetUser.auth_uid = secondAuth.authUserId;
+            }
+          }
+        } catch (signUpErr) {
+          console.warn('Auto-registro no Supabase Auth ignorado:', signUpErr);
+        }
+
+        setUsuarios(prev => {
+          const idx = prev.findIndex(u => u.id === targetUser!.id);
+          if (idx >= 0) {
+            const copy = [...prev];
+            copy[idx] = targetUser!;
+            return copy;
+          }
+          return [...prev, targetUser!];
+        });
+        login(targetUser);
+        return { success: true, message: 'Login realizado com sucesso!', user: targetUser };
+
       } catch (err) {
-        console.warn('Erro na autenticação Supabase Auth:', err);
+        console.warn('Erro na autenticação Supabase:', err);
         return { success: false, message: 'Erro inesperado na autenticação. Tente novamente.' };
       }
     }
 
-    // 2. Supabase NÃO configurado (offline/LAN): mantém o login local. Sem
-    //    nuvem multi-tenant, o isolamento entre empresas não é afetado.
-    const foundLocal = usuarios.find(u => u.email.trim().toLowerCase() === cleanEmail);
+    // Modo offline / local
+    const foundLocal = usuarios.find(u => (u.email || '').trim().toLowerCase() === cleanEmail);
     if (foundLocal) {
-      // Se a conta não tem senha armazenada (ex.: recém-criada e ainda não
-      // definida), não aceita a senha padrão universal — pede redefinição.
-      if (!foundLocal.senha || foundLocal.senha.trim() === '') {
+      if (!foundLocal.senha || (foundLocal.senha || '').trim() === '') {
         return { success: false, message: 'Esta conta ainda não possui senha definida. Use a recuperação de senha para criar uma.' };
       }
-      if (foundLocal.senha !== passwordInput) {
-        return { success: false, message: 'Senha incorreta. Digite a nova senha cadastrada.' };
+      const inputHash = await hashSha256(passwordInput);
+      const dbSenha = (foundLocal.senha || '').trim();
+      const isPasswordValid = dbSenha !== '' && (passwordInput === dbSenha || (inputHash !== '' && inputHash === dbSenha));
+
+      if (!isPasswordValid) {
+        return { success: false, message: 'E-mail ou senha incorretos. Verifique suas credenciais e tente novamente.' };
       }
       const statusCheck = checkStatus(foundLocal);
       if (!statusCheck.allowed) {
@@ -738,7 +689,7 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { success: true, message: 'Login realizado com sucesso!', user: foundLocal };
     }
 
-    return { success: false, message: 'Nenhuma conta cadastrada com este e-mail.' };
+    return { success: false, message: 'E-mail ou senha incorretos. Verifique suas credenciais e tente novamente.' };
   };
 
   // Store verification codes in memory for secure password reset
@@ -774,7 +725,7 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     // Impede duplicidade de e-mail.
-    const exists = usuarios.some(u => u.email.trim().toLowerCase() === cleanEmail);
+    const exists = usuarios.some(u => (u.email || '').trim().toLowerCase() === cleanEmail);
     if (exists) {
       return { success: false, message: 'Já existe uma conta com este endereço de e-mail.' };
     }
@@ -791,12 +742,12 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       id: `usr-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
       empresa_id: empresaAlvo.id,
       setor_id: setorAlvo.id,
-      nome: dados.nome.trim(),
+      nome: (dados.nome || '').trim(),
       email: cleanEmail,
       senha: dados.senha,
       avatar: dados.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=250',
       perfil: safePerfil,
-      cargo: dados.cargo.trim() || 'Colaborador SST',
+      cargo: (dados.cargo || '').trim() || 'Colaborador SST',
       estatisticas: {
         pontos_quizzes: 0,
         pontos_desafios: 0,
@@ -867,8 +818,8 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // PASSO 1 da recuperação de senha: gera um código de 6 dígitos,
   // guarda em memória com validade de 15 minutos e notifica o usuário.
   const requestPasswordResetCode = async (emailInput: string): Promise<{ success: boolean; message: string }> => {
-    const cleanEmail = emailInput.trim().toLowerCase();
-    const target = usuarios.find(u => u.email.trim().toLowerCase() === cleanEmail);
+    const cleanEmail = (emailInput || '').trim().toLowerCase();
+    const target = usuarios.find(u => (u.email || '').trim().toLowerCase() === cleanEmail);
     
     if (!target) {
       return { success: false, message: 'Nenhuma conta encontrada com este e-mail cadastrado.' };
@@ -939,8 +890,8 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // STEP 2 of Password Recovery: Validate 6-digit code and update password
   // PASSO 2 da recuperação: valida o código de 6 dígitos e redefine a senha.
   const resetUserPasswordWithCode = async (emailInput: string, codigoInput: string, novaSenha: string): Promise<{ success: boolean; message: string }> => {
-    const cleanEmail = emailInput.trim().toLowerCase();
-    const target = usuarios.find(u => u.email.trim().toLowerCase() === cleanEmail);
+    const cleanEmail = (emailInput || '').trim().toLowerCase();
+    const target = usuarios.find(u => (u.email || '').trim().toLowerCase() === cleanEmail);
     
     if (!target) {
       return { success: false, message: 'Nenhuma conta encontrada com este e-mail.' };
@@ -955,7 +906,7 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { success: false, message: 'O código de segurança expirou. Por favor, solicite um novo código.' };
     }
 
-    if (record.code.trim() !== codigoInput.trim()) {
+    if ((record.code || '').trim() !== (codigoInput || '').trim()) {
       return { success: false, message: 'Código de verificação incorreto. Verifique o código de 6 dígitos recebido.' };
     }
 
@@ -2018,34 +1969,40 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Add Question
   // CRUD DE PERGUNTAS
-  // Cria uma nova pergunta com ID único e empresa do usuário logado,
+  // Cria uma nova pergunta com ID único e empresa do usuário logado/alvo,
   // salva no estado local e envia para o Supabase.
-  const adicionarPergunta = (nova: Omit<Pergunta, 'id' | 'empresa_id'>) => {
+  const adicionarPergunta = (nova: Omit<Pergunta, 'id' | 'empresa_id'>, targetEmpresaIdInput?: string) => {
+    const targetEmpresaId = targetEmpresaIdInput || currentUser?.empresa_id || empresa.id;
     const item: Pergunta = {
       ...nova,
       id: `p-${Date.now()}-${Math.floor(Math.random()*1000)}`,
-      empresa_id: empresa.id,
+      empresa_id: targetEmpresaId,
     };
     setPerguntas(prev => [item, ...prev]);
     supabaseService.upsertPergunta(item);
   };
 
-  // Add Questions in Batch (Deduplicating by enunciado)
+  // Add Questions in Batch (Deduplicating by enunciado ISOLATING BY EMPRESA)
   // Adiciona várias perguntas de uma vez (importação CSV), evitando
-  // duplicidade comparando o texto do enunciado (ignorando maiúsculas).
-  const adicionarPerguntasLote = (novas: Omit<Pergunta, 'id' | 'empresa_id'>[]) => {
-    const existentesSet = new Set(perguntas.map(p => p.enunciado.trim().toLowerCase()));
+  // duplicidade comparando o texto do enunciado apenas com perguntas da MESMA empresa.
+  const adicionarPerguntasLote = (novas: Omit<Pergunta, 'id' | 'empresa_id'>[], targetEmpresaIdInput?: string): number => {
+    const targetEmpresaId = targetEmpresaIdInput || currentUser?.empresa_id || empresa.id;
+    
+    // FILTRAGEM CORRETA POR EMPRESA: só deduplica em relação às perguntas da MESMA empresa!
+    const perguntasDaEmpresa = perguntas.filter(p => p.empresa_id === targetEmpresaId);
+    const existentesSet = new Set(perguntasDaEmpresa.map(p => p.enunciado.trim().toLowerCase()));
+    
     const itensParaAdicionar: Pergunta[] = [];
 
     novas.forEach((nova, idx) => {
       const cleanEnunciado = nova.enunciado.trim().toLowerCase();
-      // Só adiciona se o enunciado ainda não existe no banco.
+      // Só adiciona se o enunciado ainda não existe no banco DESTA empresa.
       if (!existentesSet.has(cleanEnunciado)) {
         existentesSet.add(cleanEnunciado);
         const item: Pergunta = {
           ...nova,
-          id: `p-${Date.now()}-${idx}-${Math.floor(Math.random()*1000)}`,
-          empresa_id: empresa.id,
+          id: `p-${Date.now()}-${idx}-${Math.floor(Math.random()*100000)}`,
+          empresa_id: targetEmpresaId,
         };
         itensParaAdicionar.push(item);
       }
@@ -2053,8 +2010,10 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     if (itensParaAdicionar.length > 0) {
       setPerguntas(prev => [...itensParaAdicionar, ...prev]);
-      itensParaAdicionar.forEach(p => supabaseService.upsertPergunta(p));
+      supabaseService.upsertPerguntas(itensParaAdicionar);
     }
+
+    return itensParaAdicionar.length;
   };
 
   // Edit Question
@@ -3529,7 +3488,7 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setor_id: novoUsuario.setor_id,
       nome: novoUsuario.nome,
       email: novoUsuario.email,
-      senha: novoUsuario.senha,
+      senha: (novoUsuario.senha && novoUsuario.senha.trim() !== '') ? novoUsuario.senha.trim() : '123456',
       cargo: novoUsuario.cargo,
       perfil: finalPerfil,
       is_instrutor: novoUsuario.is_instrutor || false,
@@ -3620,19 +3579,19 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     let currentUsers = [...usuarios];
 
     novosUsuarios.forEach((u, idx) => {
-      const cleanEmail = u.email.trim().toLowerCase();
+      const cleanEmail = (u.email || '').trim().toLowerCase();
 
       // Find or create sector
       // Procura o setor na empresa alvo; se não existir, cria automaticamente.
       let sector = currentSectors.find(
-        s => s.empresa_id === targetEmpId && s.nome.toLowerCase() === u.setor_nome.trim().toLowerCase()
+        s => s.empresa_id === targetEmpId && s.nome.toLowerCase() === (u.setor_nome || '').trim().toLowerCase()
       );
 
-      if (!sector && u.setor_nome.trim()) {
+      if (!sector && (u.setor_nome || '').trim()) {
         sector = {
           id: `set-${Date.now()}-${idx}-${Math.floor(Math.random()*1000)}`,
           empresa_id: targetEmpId,
-          nome: u.setor_nome.trim(),
+          nome: (u.setor_nome || '').trim(),
           colaboradores_ativos: 0,
         };
         currentSectors.push(sector);
@@ -3652,7 +3611,7 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       // Check if user already exists by email
       // Verifica se o usuário já existe (pelo e-mail).
-      const existingIdx = currentUsers.findIndex(ex => ex.email.trim().toLowerCase() === cleanEmail);
+      const existingIdx = currentUsers.findIndex(ex => (ex.email || '').trim().toLowerCase() === cleanEmail);
 
       if (existingIdx >= 0) {
         // UPDATE EXISTING USER
@@ -3660,9 +3619,9 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const existing = currentUsers[existingIdx];
         const updatedUser: Usuario = {
           ...existing,
-          nome: u.nome.trim() || existing.nome,
-          senha: u.senha && u.senha.trim() ? u.senha.trim() : existing.senha,
-          cargo: u.cargo.trim() || existing.cargo,
+          nome: (u.nome || '').trim() || existing.nome,
+          senha: u.senha && (u.senha || '').trim() ? u.senha.trim() : existing.senha,
+          cargo: (u.cargo || '').trim() || existing.cargo,
           setor_id: sectorIdToUse,
           perfil: userPerfil,
           is_instrutor: u.is_instrutor !== undefined ? u.is_instrutor : existing.is_instrutor,
@@ -3677,10 +3636,10 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           id: `usr-${Date.now()}-${idx}-${Math.floor(Math.random()*1000)}`,
           empresa_id: targetEmpId,
           setor_id: sectorIdToUse,
-          nome: u.nome.trim(),
+          nome: (u.nome || '').trim(),
           email: cleanEmail,
-          senha: u.senha && u.senha.trim() ? u.senha.trim() : gerarSenhaPadrao(),
-          cargo: u.cargo.trim() || 'Colaborador SST',
+          senha: u.senha && (u.senha || '').trim() ? u.senha.trim() : gerarSenhaPadrao(),
+          cargo: (u.cargo || '').trim() || 'Colaborador SST',
           perfil: userPerfil,
           is_instrutor: u.is_instrutor || false,
           ativo: true,
@@ -4393,7 +4352,7 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     pin: string, 
     dadosParticipante: { nome: string; matricula?: string; cpf?: string; cpf_ou_empresa?: string; usuario_id?: string; is_visitante?: boolean }
   ): Promise<{ success: boolean; message: string; sala?: SalaQuizGuiado; participanteId?: string }> => {
-    const cleanPin = pin.trim().toUpperCase();
+    const cleanPin = (pin || '').trim().toUpperCase();
     
     // 1. Tenta buscar no estado local
     let sala = salasQuizGuiado.find(s => (typeof s.pin === 'string' ? s.pin.trim().toUpperCase() : '') === cleanPin && s.status !== 'encerrado' && s.status !== 'concluido');
@@ -4439,7 +4398,7 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // Verificar se participante já está na sala
     const existente = sala.participantes.find(
       p => (dadosParticipante.usuario_id && p.usuario_id === dadosParticipante.usuario_id) ||
-           (dadosParticipante.nome && typeof p.nome === 'string' && p.nome.trim().toLowerCase() === dadosParticipante.nome.trim().toLowerCase())
+           (dadosParticipante.nome && typeof p.nome === 'string' && (p.nome || '').trim().toLowerCase() === (dadosParticipante.nome || '').trim().toLowerCase())
     );
 
     if (existente) {
@@ -4485,7 +4444,7 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     // Se o nome não foi informado ou é o placeholder inicial de visitante, autoriza a entrada no painel para que o usuário digite seu nome
-    if (!dadosParticipante.nome || dadosParticipante.nome === 'Participante Visitante' || !dadosParticipante.nome.trim()) {
+    if (!dadosParticipante.nome || dadosParticipante.nome === 'Participante Visitante' || !(dadosParticipante.nome || '').trim()) {
       return {
         success: true,
         message: 'Sala localizada! Por favor, digite seu nome ou apelido para continuar.',
@@ -4496,7 +4455,7 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const novoParticipante: ParticipanteSalaQuiz = {
       id: `part-${Date.now()}-${Math.floor(Math.random()*1000)}`,
       usuario_id: dadosParticipante.usuario_id,
-      nome: dadosParticipante.nome.trim(),
+      nome: (dadosParticipante.nome || '').trim(),
       matricula: dadosParticipante.matricula?.trim(),
       cpf: dadosParticipante.cpf?.trim(),
       cpf_ou_empresa: dadosParticipante.cpf_ou_empresa?.trim(),

@@ -39,6 +39,7 @@ export const LaudosAvaliacoesTab: React.FC<LaudosAvaliacoesTabProps> = ({
     currentUser, 
     resultadosAvaliacaoSST, 
     salasQuizGuiado, 
+    usuarios,
     excluirResultadoAvaliacaoSST 
   } = useSST();
 
@@ -58,38 +59,56 @@ export const LaudosAvaliacoesTab: React.FC<LaudosAvaliacoesTabProps> = ({
   const isAdminEmpresa = currentUser?.perfil === 'admin';
   const isInstrutor = currentUser?.is_instrutor || isAdminEmpresa || isSuperAdmin;
 
-  // REGRAS DE PRIVACIDADE E ESCOPO:
-  // Os laudos permanecem armazenados mesmo após a sala ser excluída!
+  // REGRAS DE PRIVACIDADE E ESCOPO ENTRE EMPRESAS E USUÁRIOS:
+  // 1. Super Admin enxerga todos os laudos.
+  // 2. Admin da empresa enxerga apenas laudos vinculados à sua própria empresa.
+  // 3. Instrutor enxerga apenas laudos da sua empresa ou ministrados por ele.
+  // 4. Colaborador enxerga estritamente suas próprias avaliações.
   const laudosVisiveis = useMemo(() => {
     const todos = resultadosAvaliacaoSST || [];
     return todos.filter(r => {
       // 1. Super Admin enxerga tudo
       if (isSuperAdmin) return true;
 
-      // 2. Admin da empresa enxerga da própria empresa
+      // Se r.empresa_id está definido e não pertence à empresa do usuário logado, descarta!
+      if (r.empresa_id && r.empresa_id !== currentUser?.empresa_id) {
+        return false;
+      }
+
+      // 2. Admin da empresa: enxerga apenas avaliações da PRÓPRIA empresa
       if (isAdminEmpresa) {
         if (r.empresa_id) return r.empresa_id === currentUser?.empresa_id;
         const sala = (salasQuizGuiado || []).find(s => s.id === r.sala_id);
         if (sala) return sala.empresa_id === currentUser?.empresa_id;
-        // Fallback: se não tiver sala_id ou empresa_id definido, assume pertencer à empresa atual se criada por instrutor da empresa
-        return true;
+        if (r.participante_id) {
+          const userPart = (usuarios || []).find(u => u.id === r.participante_id);
+          if (userPart) return userPart.empresa_id === currentUser?.empresa_id;
+        }
+        return false;
       }
 
-      // 3. Instrutor enxerga os treinamentos que ministrou
+      // 3. Instrutor: enxerga treinamentos da própria empresa ministrados por ele
       if (currentUser?.is_instrutor) {
         if (r.instrutor_id && r.instrutor_id === currentUser.id) return true;
         if (r.instrutor_nome && currentUser?.nome && r.instrutor_nome.trim().toLowerCase() === currentUser.nome.trim().toLowerCase()) return true;
         const sala = (salasQuizGuiado || []).find(s => s.id === r.sala_id);
         if (sala && (sala.instrutor_id === currentUser.id || sala.empresa_id === currentUser.empresa_id)) return true;
+        if (r.participante_id) {
+          const userPart = (usuarios || []).find(u => u.id === r.participante_id);
+          if (userPart && userPart.empresa_id === currentUser?.empresa_id) return true;
+        }
         return false;
       }
 
-      // 4. Colaborador/Participante: apenas suas próprias avaliações
-      return r.participante_id === currentUser?.id || 
+      // 4. Colaborador/Participante: apenas suas próprias avaliações da sua empresa
+      const isDoUsuario = r.participante_id === currentUser?.id || 
              (r.matricula && currentUser?.matricula && r.matricula === currentUser.matricula) ||
              (r.cpf && currentUser?.cpf && r.cpf === currentUser.cpf);
+      if (!isDoUsuario) return false;
+      if (r.empresa_id) return r.empresa_id === currentUser?.empresa_id;
+      return true;
     });
-  }, [resultadosAvaliacaoSST, salasQuizGuiado, currentUser, isSuperAdmin, isAdminEmpresa]);
+  }, [resultadosAvaliacaoSST, salasQuizGuiado, usuarios, currentUser, isSuperAdmin, isAdminEmpresa]);
 
   // Aplicação da busca geral e filtros (incluindo filtro por data)
   const laudosFiltrados = useMemo(() => {

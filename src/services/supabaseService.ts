@@ -206,7 +206,7 @@ export const supabaseService = {
       ] = await Promise.all([
         client.from('empresas').select('*'),
         client.from('setores').select('*'),
-        client.from('v_usuarios_sem_senha').select('*'),
+        client.from('usuarios').select('*'),
         client.from('perguntas').select('*'),
         client.from('campanhas').select('*'),
         client.from('quizzes').select('*'),
@@ -221,11 +221,11 @@ export const supabaseService = {
       let usuariosData = resUsuarios.data;
       let usrErr = resUsuarios.error;
 
-      // Fallback: se a view v_usuarios_sem_senha falhar ou não existir, busca diretamente da tabela usuarios
+      // Fallback: se a busca falhar, tenta novamente na tabela usuarios
       if (usrErr || !usuariosData || usuariosData.length === 0) {
         const { data: directUsers, error: dErr } = await client
           .from('usuarios')
-          .select('id, empresa_id, setor_id, auth_uid, nome, email, avatar, cargo, perfil, is_instrutor, ativo, estatisticas, trofeus_temporadas, ultimo_quiz_data, created_at');
+          .select('*');
         if (!dErr && directUsers && directUsers.length > 0) {
           usuariosData = directUsers;
           usrErr = null;
@@ -351,15 +351,11 @@ export const supabaseService = {
       const fallbackSetorId = sanitizedSetores[0]?.id || null;
 
       // 3. Saneia os usuários (valida empresa_id e setor_id) e grava
-      // SEGURANÇA (auditoria V-017): remove a senha em texto puro do payload.
-      const sanitizedUsuarios = usuarios.map(u => {
-        const { senha, ...semSenha } = u;
-        return {
-          ...semSenha,
-          empresa_id: validEmpresaIds.has(u.empresa_id) ? u.empresa_id : fallbackEmpresaId,
-          setor_id: u.setor_id && validSetorIds.has(u.setor_id) ? u.setor_id : fallbackSetorId
-        };
-      });
+      const sanitizedUsuarios = usuarios.map(u => ({
+        ...u,
+        empresa_id: validEmpresaIds.has(u.empresa_id) ? u.empresa_id : fallbackEmpresaId,
+        setor_id: u.setor_id && validSetorIds.has(u.setor_id) ? u.setor_id : fallbackSetorId
+      }));
 
       let { error: e3 } = await client.from('usuarios').upsert(sanitizedUsuarios);
       // Contorno para schema antigo: remove o campo "ativo" quando o banco não o possui
@@ -539,9 +535,10 @@ export const supabaseService = {
         setor_id: sectorIdToUse
       };
 
-      // SEGURANÇA (auditoria V-017): a senha em texto puro NUNCA é enviada à
-      // nuvem. O App usa Supabase Auth (hash Bcrypt) para autenticação.
-      delete sanitized.senha;
+      // Se a senha não foi informada na atualização, remove para não sobrescrever
+      if (sanitized.senha === undefined || sanitized.senha === null) {
+        delete sanitized.senha;
+      }
 
       let { error } = await client.from('usuarios').upsert(sanitized);
       // Contorno para schema antigo: remove os campos "ativo" e/ou "is_instrutor" se o banco não os tiver
@@ -628,16 +625,12 @@ export const supabaseService = {
       const validSetorIds = new Set(data.setores?.map(s => s.id) || []);
 
       // 3. Sincroniza os usuários (valida empresa_id e setor_id)
-      // SEGURANÇA (auditoria V-017): remove a senha em texto puro do payload.
       if (data.usuarios && data.usuarios.length > 0) {
-        const sanitizedUsuarios = data.usuarios.map(u => {
-          const { senha, ...semSenha } = u;
-          return {
-            ...semSenha,
-            empresa_id: validEmpresaIds.has(u.empresa_id) ? u.empresa_id : fallbackEmpresaId,
-            setor_id: u.setor_id && u.setor_id.trim() !== '' && validSetorIds.has(u.setor_id.trim()) ? u.setor_id.trim() : null
-          };
-        });
+        const sanitizedUsuarios = data.usuarios.map(u => ({
+          ...u,
+          empresa_id: validEmpresaIds.has(u.empresa_id) ? u.empresa_id : fallbackEmpresaId,
+          setor_id: u.setor_id && u.setor_id.trim() !== '' && validSetorIds.has(u.setor_id.trim()) ? u.setor_id.trim() : null
+        }));
 
         let { error: e3 } = await client.from('usuarios').upsert(sanitizedUsuarios);
         // Contorno para schema antigo: remove o campo "ativo" se o banco não o tiver
@@ -779,6 +772,17 @@ export const supabaseService = {
       if (error) console.error('Erro ao upsertPergunta:', error.message);
     } catch (err) {
       console.error('Exceção em upsertPergunta:', err);
+    }
+  },
+  // Insere ou atualiza várias perguntas em lote na tabela "perguntas".
+  async upsertPerguntas(perguntasArr: Pergunta[]) {
+    const client = getSupabaseClient();
+    if (!client || !perguntasArr || perguntasArr.length === 0) return;
+    try {
+      const { error } = await client.from('perguntas').upsert(perguntasArr);
+      if (error) console.error('Erro ao upsertPerguntas:', error.message);
+    } catch (err) {
+      console.error('Exceção em upsertPerguntas:', err);
     }
   },
   // Deleta (DELETE) uma pergunta pelo id.

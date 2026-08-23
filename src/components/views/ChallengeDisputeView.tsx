@@ -57,28 +57,6 @@ export const ChallengeDisputeView: React.FC<ChallengeDisputeViewProps> = ({ acti
     criarRevanche
   } = useSST();
 
-  // Guarda de acesso: administradores e super administradores NÃO participam das
-  // disputas 1x1, então recebem uma tela de bloqueio informativo.
-  if (currentUser.perfil === 'admin' || currentUser.perfil === 'super_admin') {
-    return (
-      <div className="bg-slate-900/90 border border-purple-500/30 rounded-2xl p-8 text-center text-white space-y-4 max-w-xl mx-auto my-12 shadow-2xl backdrop-blur-xl">
-        <div className="p-4 bg-purple-500/20 text-purple-400 rounded-2xl w-16 h-16 mx-auto flex items-center justify-center border border-purple-500/40">
-          <Swords className="w-8 h-8" />
-        </div>
-        <h2 className="text-xl font-extrabold text-white">Perfil com Acesso Restrito a Desafios 1x1</h2>
-        <p className="text-xs text-slate-300 leading-relaxed">
-          Você está logado como <strong className="text-purple-300">{currentUser.nome}</strong> ({currentUser.perfil === 'super_admin' ? 'Super Administrador' : 'Administrador da Empresa'}). Administradores e gerentes <strong className="text-purple-300">não participam de disputas 1x1 nem aparecem nos rankings</strong>.
-        </p>
-        <button
-          onClick={onVoltar}
-          className="bg-white/10 hover:bg-white/20 text-white font-bold text-xs px-6 py-2.5 rounded-xl border border-white/10 transition-all"
-        >
-          Voltar ao Painel Administrativo
-        </button>
-      </div>
-    );
-  }
-
   // Estados do formulário de lançamento: oponente selecionado, modo do desafio
   // (competitivo/amistoso), valor da aposta e aba ativa do histórico.
   const [selectedOpponentId, setSelectedOpponentId] = useState<string>('');
@@ -100,7 +78,8 @@ export const ChallengeDisputeView: React.FC<ChallengeDisputeViewProps> = ({ acti
     u.perfil === 'colaborador' && 
     u.ativo !== false
   );
-  const tamanhoPorSetor = setores.map(s => empresaUsuarios.filter(u => u.setor_id === s.id).length);
+  const setoresEmpresa = setores.filter(s => s.empresa_id === currentUser.empresa_id || s.empresa_id === empresa.id);
+  const tamanhoPorSetor = setoresEmpresa.map(s => empresaUsuarios.filter(u => u.setor_id === s.id).length);
   const maxSetorTamanho = Math.max(...tamanhoPorSetor, 1);
   const totalSetorPermitido = maxSetorTamanho * 2;
   const meuSetorTamanho = empresaUsuarios.filter(u => u.setor_id === currentUser.setor_id).length || 1;
@@ -313,6 +292,28 @@ export const ChallengeDisputeView: React.FC<ChallengeDisputeViewProps> = ({ acti
       console.warn('Erro ao salvar sessão de desafio:', err);
     }
   }, [desafioEmJogo, preparadoParaComecar, indicePerguntaAtual, respostasMinhas, preparadoParaDesempate, currentUser.id]);
+
+  // Guarda de acesso (executada APÓS todos os hooks): administradores e super
+  // administradores NÃO participam das disputas 1x1, então recebem uma tela de bloqueio.
+  if (currentUser.perfil === 'admin' || currentUser.perfil === 'super_admin') {
+    return (
+      <div className="bg-slate-900/90 border border-purple-500/30 rounded-2xl p-8 text-center text-white space-y-4 max-w-xl mx-auto my-12 shadow-2xl backdrop-blur-xl">
+        <div className="p-4 bg-purple-500/20 text-purple-400 rounded-2xl w-16 h-16 mx-auto flex items-center justify-center border border-purple-500/40">
+          <Swords className="w-8 h-8" />
+        </div>
+        <h2 className="text-xl font-extrabold text-white">Perfil com Acesso Restrito a Desafios 1x1</h2>
+        <p className="text-xs text-slate-300 leading-relaxed">
+          Você está logado como <strong className="text-purple-300">{currentUser.nome}</strong> ({currentUser.perfil === 'super_admin' ? 'Super Administrador' : 'Administrador da Empresa'}). Administradores e gerentes <strong className="text-purple-300">não participam de disputas 1x1 nem aparecem nos rankings</strong>.
+        </p>
+        <button
+          onClick={onVoltar}
+          className="bg-white/10 hover:bg-white/20 text-white font-bold text-xs px-6 py-2.5 rounded-xl border border-white/10 transition-all"
+        >
+          Voltar ao Painel Administrativo
+        </button>
+      </div>
+    );
+  }
 
   // Handler: Lança um novo desafio, validando a cota semanal e o oponente selecionado.
   // Define a aposta (amistosa = pontos de vitória configurados; competitiva = valor

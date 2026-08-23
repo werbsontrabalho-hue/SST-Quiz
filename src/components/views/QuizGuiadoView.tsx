@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { useSST } from '../../context/SSTContext';
 import { CriarSalaModal } from './quizGuiado/CriarSalaModal';
 import { PainelInstrutor } from './quizGuiado/PainelInstrutor';
@@ -39,7 +39,8 @@ export const QuizGuiadoView: React.FC = () => {
     entrarNaSalaQuizGuiado, 
     excluirSalaQuizGuiado,
     resultadosAvaliacaoSST,
-    obterResultadoAvaliacaoParticipante
+    obterResultadoAvaliacaoParticipante,
+    usuarios
   } = useSST();
 
   // Estados locais da view
@@ -67,6 +68,81 @@ export const QuizGuiadoView: React.FC = () => {
 
   // Objeto da sala selecionada no modo instrutor ou participante
   const salaSelecionada = (salasQuizGuiado || []).find(s => s.id === salaAtivaId);
+
+  const isSuperAdmin = currentUser?.perfil === 'super_admin';
+  const isAdminEmpresa = currentUser?.perfil === 'admin';
+
+  // REGRA DE PRIVACIDADE E ACESSO:
+  // 1) Super Admin global: enxerga TODAS as salas (todas as empresas).
+  // 2) Admin da empresa: enxerga TODAS as salas da PRÓPRIA empresa
+  //    (inclusive as criadas por colaboradores/instrutores).
+  // 3) Instrutor/Colaborador: enxerga SOMENTE as salas que ELE criou.
+  // 4) Proteção entre empresas: ninguém vê salas de OUTRA empresa.
+  const salasVisiveis = (salasQuizGuiado || []).filter(s => {
+    if (isSuperAdmin) return true; // Super Admin enxerga tudo (proteção entre empresas não se aplica)
+
+    // Admin: só salas da PRÓPRIA empresa
+    if (isAdminEmpresa) {
+      return s.empresa_id === currentUser?.empresa_id;
+    }
+
+    // Demais usuários: só as salas criadas por ELE MESMO (e da própria empresa)
+    const mesmaEmpresa = !s.empresa_id || s.empresa_id === currentUser?.empresa_id;
+    const eCriador = (s.instrutor_id && currentUser?.id && s.instrutor_id === currentUser.id) ||
+                     (s.instrutor_nome && currentUser?.nome && s.instrutor_nome.trim().toLowerCase() === currentUser.nome.trim().toLowerCase());
+    return mesmaEmpresa && eCriador;
+  });
+
+  // Filtragem por busca
+  const salasFiltradas = salasVisiveis.filter(s => {
+    const nome = s.nome || s.treinamento_titulo || '';
+    const pin = s.pin || '';
+    return !buscaSala || 
+      nome.toLowerCase().includes(buscaSala.toLowerCase()) || 
+      pin.includes(buscaSala);
+  });
+
+  // Meus resultados de avaliação teórica SST
+  const meusResultadosSST = (resultadosAvaliacaoSST || []).filter(r =>
+    r.participante_id === currentUser?.id ||
+    (salaAtivaId && r.sala_id === salaAtivaId)
+  );
+
+  // Contagem estritamente filtrada por empresa e permissões para o badge da aba Laudos & PDFs
+  const laudosVisiveisCount = useMemo(() => {
+    const todos = resultadosAvaliacaoSST || [];
+    return todos.filter(r => {
+      if (isSuperAdmin) return true;
+      if (r.empresa_id && r.empresa_id !== currentUser?.empresa_id) return false;
+      if (isAdminEmpresa) {
+        if (r.empresa_id) return r.empresa_id === currentUser?.empresa_id;
+        const sala = (salasQuizGuiado || []).find(s => s.id === r.sala_id);
+        if (sala) return sala.empresa_id === currentUser?.empresa_id;
+        if (r.participante_id) {
+          const userPart = (usuarios || []).find(u => u.id === r.participante_id);
+          if (userPart) return userPart.empresa_id === currentUser?.empresa_id;
+        }
+        return false;
+      }
+      if (currentUser?.is_instrutor) {
+        if (r.instrutor_id && r.instrutor_id === currentUser.id) return true;
+        if (r.instrutor_nome && currentUser?.nome && r.instrutor_nome.trim().toLowerCase() === currentUser.nome.trim().toLowerCase()) return true;
+        const sala = (salasQuizGuiado || []).find(s => s.id === r.sala_id);
+        if (sala && (sala.instrutor_id === currentUser.id || sala.empresa_id === currentUser.empresa_id)) return true;
+        if (r.participante_id) {
+          const userPart = (usuarios || []).find(u => u.id === r.participante_id);
+          if (userPart && userPart.empresa_id === currentUser?.empresa_id) return true;
+        }
+        return false;
+      }
+      const isDoUsuario = r.participante_id === currentUser?.id || 
+             (r.matricula && currentUser?.matricula && r.matricula === currentUser.matricula) ||
+             (r.cpf && currentUser?.cpf && r.cpf === currentUser.cpf);
+      if (!isDoUsuario) return false;
+      if (r.empresa_id) return r.empresa_id === currentUser?.empresa_id;
+      return true;
+    }).length;
+  }, [resultadosAvaliacaoSST, salasQuizGuiado, usuarios, currentUser, isSuperAdmin, isAdminEmpresa]);
 
   // Auto-preenche e abre fluxo de entrada se vier com URL parameter ?pin=XXXXXX
   // CORREÇÃO (auditoria Problema 2): reage a mudanças do parâmetro (popstate),
@@ -235,50 +311,6 @@ export const QuizGuiadoView: React.FC = () => {
     );
   }
 
-  const isSuperAdmin = currentUser?.perfil === 'super_admin';
-  const isAdminEmpresa = currentUser?.perfil === 'admin';
-
-  // REGRA DE PRIVACIDADE E ACESSO:
-  // 1) Super Admin global: enxerga TODAS as salas (todas as empresas).
-  // 2) Admin da empresa: enxerga TODAS as salas da PRÓPRIA empresa
-  //    (inclusive as criadas por colaboradores/instrutores).
-  // 3) Instrutor/Colaborador: enxerga SOMENTE as salas que ELE criou.
-  // 4) Proteção entre empresas: ninguém vê salas de OUTRA empresa.
-  const salasVisiveis = (salasQuizGuiado || []).filter(s => {
-    if (isSuperAdmin) return true; // Super Admin enxerga tudo (proteção entre empresas não se aplica)
-
-    // Admin: só salas da PRÓPRIA empresa
-    if (isAdminEmpresa) {
-      return s.empresa_id === currentUser?.empresa_id;
-    }
-
-    // Demais usuários: só as salas criadas por ELE MESMO (e da própria empresa)
-    const mesmaEmpresa = !s.empresa_id || s.empresa_id === currentUser?.empresa_id;
-    const eCriador = (s.instrutor_id && currentUser?.id && s.instrutor_id === currentUser.id) ||
-                     (s.instrutor_nome && currentUser?.nome && s.instrutor_nome.trim().toLowerCase() === currentUser.nome.trim().toLowerCase());
-    return mesmaEmpresa && eCriador;
-  });
-
-  // Filtragem por busca
-  const salasFiltradas = salasVisiveis.filter(s => {
-    const nome = s.nome || s.treinamento_titulo || '';
-    const pin = s.pin || '';
-    return !buscaSala || 
-      nome.toLowerCase().includes(buscaSala.toLowerCase()) || 
-      pin.includes(buscaSala);
-  });
-
-  // Meus resultados de avaliação teórica SST
-  // CORREÇÃO (auditoria Quiz Guiado/Avaliação): para não exibir avaliações de
-  // OUTRAS pessoas (o navegador acumula chaves quiz_part_id_* de quem usou o
-  // dispositivo), consideramos apenas as fichas do USUÁRIO LOGADO (currentUser)
-  // e, quando o participante está numa sala ativa NESTE dispositivo, as da
-  // sala/sessão atual. O histórico completo fica na área dedicada.
-  const meusResultadosSST = (resultadosAvaliacaoSST || []).filter(r =>
-    r.participante_id === currentUser?.id ||
-    (salaAtivaId && r.sala_id === salaAtivaId)
-  );
-
   return (
     <div className="space-y-6">
       
@@ -354,11 +386,11 @@ export const QuizGuiadoView: React.FC = () => {
         >
           <ShieldCheck className="w-4 h-4" />
           <span>Laudos & PDFs de Avaliações</span>
-          {(resultadosAvaliacaoSST || []).length > 0 && (
+          {laudosVisiveisCount > 0 && (
             <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
               abaAtiva === 'laudos' ? 'bg-slate-950/30 text-slate-950' : 'bg-emerald-500/20 text-emerald-300'
             }`}>
-              {(resultadosAvaliacaoSST || []).length}
+              {laudosVisiveisCount}
             </span>
           )}
         </button>

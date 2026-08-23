@@ -143,9 +143,9 @@ export const PrizesView: React.FC = () => {
   const handleSalvarPremio = (e: React.FormEvent) => {
     e.preventDefault();
     // Exige um título preenchido para continuar
-    if (!titulo.trim()) return;
+    if (!titulo || !(titulo || '').trim()) return;
 
-    const imgToSave = imagemUrl.trim() || UNIVERSAL_PRIZE_IMAGE;
+    const imgToSave = (imagemUrl || '').trim() || UNIVERSAL_PRIZE_IMAGE;
 
     if (premioParaEditar) {
       // Modo edição: atualiza o prêmio existente pelo id
@@ -185,11 +185,11 @@ export const PrizesView: React.FC = () => {
   // ==========================================================
   const abrirEdicao = (premio: Premiacao) => {
     setPremioParaEditar(premio);
-    setTitulo(premio.titulo);
-    setDescricao(premio.descricao);
-    setTipo(premio.tipo);
-    setMesRef(premio.mes_referencia);
-    setRequisito(premio.requisito);
+    setTitulo(premio.titulo || '');
+    setDescricao(premio.descricao || '');
+    setTipo(premio.tipo || 'vale_presente');
+    setMesRef(premio.mes_referencia || '');
+    setRequisito(premio.requisito || '');
     setImagemUrl(premio.imagem || '');
     setCustoPontos(premio.custo_pontos ?? 300);
     setEstoque(premio.estoque ?? 10);
@@ -879,7 +879,7 @@ export const PrizesView: React.FC = () => {
                 <label className="block font-semibold text-slate-300 mb-1">Título do Prêmio</label>
                 <input
                   type="text"
-                  value={titulo}
+                  value={titulo || ''}
                   onChange={(e) => setTitulo(e.target.value)}
                   placeholder="Ex: Vale-Presente R$ 300"
                   className="w-full bg-slate-950/80 border border-white/10 rounded-xl p-2.5 text-slate-200"
@@ -891,7 +891,7 @@ export const PrizesView: React.FC = () => {
               <div>
                 <label className="block font-semibold text-slate-300 mb-1">Descrição</label>
                 <textarea
-                  value={descricao}
+                  value={descricao || ''}
                   onChange={(e) => setDescricao(e.target.value)}
                   placeholder="Regras de entrega do prêmio..."
                   rows={2}

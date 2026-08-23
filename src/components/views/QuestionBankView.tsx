@@ -301,7 +301,7 @@ export const QuestionBankView: React.FC = () => {
       tempo_limite_segundos: novoTempoLimite,
       norma_relacionada: novaNorma.trim(),
       disponivel_desafios: novoDisponivelDesafios,
-    });
+    }, currentUser?.empresa_id);
 
     setShowNovaModal(false);
     resetFormulario();
@@ -350,8 +350,12 @@ export const QuestionBankView: React.FC = () => {
   const handleConfirmarImportacaoCSV = () => {
     if (!previewDataCSV) return;
     const { items: importadas, errors } = previewDataCSV;
-    adicionarPerguntasLote(importadas);
-    let msg = `${importadas.length} pergunta(s) importada(s) com sucesso para o banco de dados!`;
+    const qtdAdicionadas = adicionarPerguntasLote(importadas, currentUser?.empresa_id);
+    let msg = `${qtdAdicionadas} pergunta(s) importada(s) com sucesso para o banco de dados!`;
+    if (qtdAdicionadas < importadas.length) {
+      const ignoradas = importadas.length - qtdAdicionadas;
+      msg += ` (${ignoradas} pergunta(s) ignorada(s) por já existirem nesta empresa).`;
+    }
     if (errors.length > 0) {
       msg += ` (${errors.length} erro(s) em linhas: ${errors.slice(0, 2).join('; ')})`;
     }

@@ -30,19 +30,19 @@ export const IdentificacaoParticipanteModal: React.FC<IdentificacaoParticipanteM
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!nome.trim()) {
+    if (!(nome || '').trim()) {
       setErroMsg(isInterativo ? 'Por favor, informe seu Nome ou Apelido para continuar.' : 'Por favor, informe seu Nome Completo para continuar.');
       return;
     }
-    if (!isInterativo && !matricula.trim()) {
+    if (!isInterativo && !(matricula || '').trim()) {
       setErroMsg('Por favor, informe sua Matrícula / Registro.');
       return;
     }
     setErroMsg('');
     onConfirmar({
-      nome: nome.trim(),
-      matricula: isInterativo ? (matricula.trim() || 'INTERATIVO') : matricula.trim(),
-      cpf_ou_empresa: isInterativo ? 'Modo Interativo' : matricula.trim(),
+      nome: (nome || '').trim(),
+      matricula: isInterativo ? ((matricula || '').trim() || 'INTERATIVO') : (matricula || '').trim(),
+      cpf_ou_empresa: isInterativo ? 'Modo Interativo' : (matricula || '').trim(),
     });
   };
 

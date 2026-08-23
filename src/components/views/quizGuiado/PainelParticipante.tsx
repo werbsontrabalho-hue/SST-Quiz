@@ -92,7 +92,7 @@ export const PainelParticipante: React.FC<PainelParticipanteProps> = ({
   // Encontrar estado do participante logado na sala de forma isolada sem vazamento de usuario
   const participante = participantes.find(
     p => (salvoPartId && p.id === salvoPartId) ||
-         (p.nome && nomeIdentificacao && p.nome.trim().toLowerCase() === nomeIdentificacao.trim().toLowerCase())
+         (p.nome && nomeIdentificacao && (p.nome || '').trim().toLowerCase() === (nomeIdentificacao || '').trim().toLowerCase())
   );
 
   const tempoLimiteSeg = sala.tempo_por_pergunta_seg ?? sala.tempo_por_pergunta ?? 30;
@@ -145,7 +145,7 @@ export const PainelParticipante: React.FC<PainelParticipanteProps> = ({
   const [erroEntrada, setErroEntrada] = useState<string>('');
   const handleEntrarComNome = async (e: React.FormEvent) => {
     e.preventDefault();
-    const nomeLimpo = inputNome.trim();
+    const nomeLimpo = (inputNome || '').trim();
     if (!nomeLimpo) return;
 
     setIsSubmittingNome(true);
@@ -156,10 +156,10 @@ export const PainelParticipante: React.FC<PainelParticipanteProps> = ({
     try {
       const res = await entrarNaSalaQuizGuiado(sala.pin, {
         nome: nomeLimpo,
-        matricula: inputMatricula.trim(),
-        cpf: inputCpf.trim(),
+        matricula: (inputMatricula || '').trim(),
+        cpf: (inputCpf || '').trim(),
         usuario_id: undefined, // Participante temporário da sessão
-        cpf_ou_empresa: `${inputMatricula.trim()} - ${inputCpf.trim()}`
+        cpf_ou_empresa: `${(inputMatricula || '').trim()} - ${(inputCpf || '').trim()}`
       });
       if (res.success && res.participanteId) {
         sessionStorage.setItem(partIdStorageKey, res.participanteId);
@@ -274,7 +274,7 @@ export const PainelParticipante: React.FC<PainelParticipanteProps> = ({
 
             <button
               type="submit"
-              disabled={!inputNome.trim() || !inputMatricula.trim() || !inputCpf.trim() || isSubmittingNome}
+              disabled={!(inputNome || '').trim() || !(inputMatricula || '').trim() || !(inputCpf || '').trim() || isSubmittingNome}
               className="w-full bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 font-black py-3.5 rounded-2xl text-xs uppercase tracking-wider shadow-lg transition-transform transform active:scale-98 flex items-center justify-center space-x-2 mt-2"
             >
               <UserCheck className="w-4 h-4" />

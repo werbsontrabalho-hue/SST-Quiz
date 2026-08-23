@@ -57,58 +57,9 @@ export const QuizPlayerView: React.FC<QuizPlayerViewProps> = ({ quizId, onVoltar
   const [quizFinalizado, setQuizFinalizado] = useState(false);
   const quizFinalizadoRef = useRef(false); // Ref de guarda contra duplo envio
 
-  // Regra de negócio: admins/super-admins não jogam quizzes para não
-  // pontuarem no ranking e assim preservar a igualdade entre colaboradores.
-  if (currentUser.perfil === 'admin' || currentUser.perfil === 'super_admin') {
-    return (
-      <div className="bg-slate-900/90 border border-amber-500/30 rounded-2xl p-8 text-center text-white space-y-4 max-w-xl mx-auto my-12 shadow-2xl backdrop-blur-xl">
-        <div className="p-4 bg-amber-500/20 text-amber-400 rounded-2xl w-16 h-16 mx-auto flex items-center justify-center border border-amber-500/40">
-          <ShieldCheck className="w-8 h-8" />
-        </div>
-        <h2 className="text-xl font-extrabold text-white">Perfil com Acesso Restrito a Quizzes</h2>
-        <p className="text-xs text-slate-300 leading-relaxed">
-          Você está logado como <strong className="text-amber-300">{currentUser.nome}</strong> ({currentUser.perfil === 'super_admin' ? 'Super Administrador' : 'Administrador da Empresa'}). Administradores e gerentes gerenciam a plataforma e <strong className="text-amber-300">não participam de quizzes nem pontuam no ranking</strong> para preservar a igualdade entre colaboradores.
-        </p>
-        <button
-          onClick={onVoltar}
-          className="bg-white/10 hover:bg-white/20 text-white font-bold text-xs px-6 py-2.5 rounded-xl border border-white/10 transition-all"
-        >
-          Voltar ao Painel Administrativo
-        </button>
-      </div>
-    );
-  }
-
   // Encontra o quiz ativo: prioriza o quizId recebido, depois o primeiro quiz
   // pendente do colaborador e, por fim, qualquer quiz já associado a ele.
   const quizAtivo = quizzes.find(q => q.id === quizId) || quizzes.find(q => q.colaborador_id === currentUser.id && q.status === 'pendente') || quizzes.find(q => q.colaborador_id === currentUser.id);
-
-  // Se o quiz já estava concluído (de uma sessão/anterior) exibe a tela de
-  // "Quiz Já Concluído" com a pontuação obtida. Se acabou de concluir nesta
-  // sessão (quizFinalizado), deixa o resumo final aparecer normalmente.
-  if (quizAtivo && quizAtivo.status === 'concluido' && !quizFinalizado) {
-    return (
-      <div className="bg-slate-900/90 border border-emerald-500/30 rounded-2xl p-8 text-center text-white space-y-4 max-w-xl mx-auto my-12 shadow-2xl backdrop-blur-xl">
-        <div className="p-4 bg-emerald-500/20 text-emerald-400 rounded-2xl w-16 h-16 mx-auto flex items-center justify-center border border-emerald-500/40">
-          <CheckCircle2 className="w-8 h-8" />
-        </div>
-        <h2 className="text-xl font-extrabold text-white">Quiz Já Concluído</h2>
-        <p className="text-sm text-slate-300 leading-relaxed">
-          Você já respondeu a este conjunto de perguntas da campanha <strong className="text-emerald-400">{quizAtivo.titulo}</strong>. A liberação de cada quiz de campanha ocorre uma única vez por colaborador.
-        </p>
-        <div className="p-4 bg-white/5 rounded-xl border border-white/10 text-xs text-slate-300 flex items-center justify-between">
-          <span>Pontuação obtida:</span>
-          <strong className="text-emerald-400 text-sm font-black">{quizAtivo.pontuacao_total} pts</strong>
-        </div>
-        <button
-          onClick={onVoltar}
-          className="bg-emerald-500 text-slate-950 font-black text-xs px-6 py-2.5 rounded-xl hover:bg-emerald-400 transition-all shadow-lg"
-        >
-          Voltar ao Meu Painel
-        </button>
-      </div>
-    );
-  }
 
   const perguntaAtual = quizAtivo?.perguntas[indicePerguntaAtual];
   const totalPerguntas = quizAtivo?.perguntas.length || 0;
@@ -117,7 +68,7 @@ export const QuizPlayerView: React.FC<QuizPlayerViewProps> = ({ quizId, onVoltar
   const storageKey = quizAtivo ? `sst_quiz_session_${currentUser.id}_${quizAtivo.id}` : null;
 
   // ======================================================================
-  // Efeitos do Quiz
+  // Efeitos do Quiz (declarados ANTES de qualquer retorno condicional)
   // ======================================================================
 
   // Sincroniza/bloqueia o estado da resposta sempre que a pergunta atual
@@ -159,7 +110,7 @@ export const QuizPlayerView: React.FC<QuizPlayerViewProps> = ({ quizId, onVoltar
   // Salva o estado da sessão do quiz no localStorage a cada progresso,
   // para permitir retomada em caso de recarregamento da página.
   useEffect(() => {
-    if (!storageKey || !quizIniciado || quizFinalizado) return;
+    if (!storageKey || !quizIniciado || quizFinalizado || !quizAtivo) return;
     try {
       const sessionData = {
         quizId: quizAtivo.id,
@@ -174,7 +125,7 @@ export const QuizPlayerView: React.FC<QuizPlayerViewProps> = ({ quizId, onVoltar
     } catch (err) {
       console.warn('Erro ao salvar sessão de quiz:', err);
     }
-  }, [storageKey, quizIniciado, indicePerguntaAtual, respostasAnteriores, pontosTotaisQuiz, quizFinalizado, respostaConfirmada, opcaoSelecionada]);
+  }, [storageKey, quizIniciado, indicePerguntaAtual, respostasAnteriores, pontosTotaisQuiz, quizFinalizado, respostaConfirmada, opcaoSelecionada, quizAtivo]);
 
   // Cronômetro regressivo da pergunta - só inicia quando quizIniciado é true!
   useEffect(() => {
@@ -206,6 +157,59 @@ export const QuizPlayerView: React.FC<QuizPlayerViewProps> = ({ quizId, onVoltar
       clearTimeout(autoTimeout);
     };
   }, [quizIniciado, indicePerguntaAtual, respostaConfirmada, quizFinalizado]);
+
+  // ======================================================================
+  // Guardas de Acesso e Telas de Estado (retornos condicionais após hooks)
+  // ======================================================================
+
+  // Regra de negócio: admins/super-admins não jogam quizzes para não
+  // pontuarem no ranking e assim preservar a igualdade entre colaboradores.
+  if (currentUser.perfil === 'admin' || currentUser.perfil === 'super_admin') {
+    return (
+      <div className="bg-slate-900/90 border border-amber-500/30 rounded-2xl p-8 text-center text-white space-y-4 max-w-xl mx-auto my-12 shadow-2xl backdrop-blur-xl">
+        <div className="p-4 bg-amber-500/20 text-amber-400 rounded-2xl w-16 h-16 mx-auto flex items-center justify-center border border-amber-500/40">
+          <ShieldCheck className="w-8 h-8" />
+        </div>
+        <h2 className="text-xl font-extrabold text-white">Perfil com Acesso Restrito a Quizzes</h2>
+        <p className="text-xs text-slate-300 leading-relaxed">
+          Você está logado como <strong className="text-amber-300">{currentUser.nome}</strong> ({currentUser.perfil === 'super_admin' ? 'Super Administrador' : 'Administrador da Empresa'}). Administradores e gerentes gerenciam a plataforma e <strong className="text-amber-300">não participam de quizzes nem pontuam no ranking</strong> para preservar a igualdade entre colaboradores.
+        </p>
+        <button
+          onClick={onVoltar}
+          className="bg-white/10 hover:bg-white/20 text-white font-bold text-xs px-6 py-2.5 rounded-xl border border-white/10 transition-all"
+        >
+          Voltar ao Painel Administrativo
+        </button>
+      </div>
+    );
+  }
+
+  // Se o quiz já estava concluído (de uma sessão/anterior) exibe a tela de
+  // "Quiz Já Concluído" com a pontuação obtida. Se acabou de concluir nesta
+  // sessão (quizFinalizado), deixa o resumo final aparecer normalmente.
+  if (quizAtivo && quizAtivo.status === 'concluido' && !quizFinalizado) {
+    return (
+      <div className="bg-slate-900/90 border border-emerald-500/30 rounded-2xl p-8 text-center text-white space-y-4 max-w-xl mx-auto my-12 shadow-2xl backdrop-blur-xl">
+        <div className="p-4 bg-emerald-500/20 text-emerald-400 rounded-2xl w-16 h-16 mx-auto flex items-center justify-center border border-emerald-500/40">
+          <CheckCircle2 className="w-8 h-8" />
+        </div>
+        <h2 className="text-xl font-extrabold text-white">Quiz Já Concluído</h2>
+        <p className="text-sm text-slate-300 leading-relaxed">
+          Você já respondeu a este conjunto de perguntas da campanha <strong className="text-emerald-400">{quizAtivo.titulo}</strong>. A liberação de cada quiz de campanha ocorre uma única vez por colaborador.
+        </p>
+        <div className="p-4 bg-white/5 rounded-xl border border-white/10 text-xs text-slate-300 flex items-center justify-between">
+          <span>Pontuação obtida:</span>
+          <strong className="text-emerald-400 text-sm font-black">{quizAtivo.pontuacao_total} pts</strong>
+        </div>
+        <button
+          onClick={onVoltar}
+          className="bg-emerald-500 text-slate-950 font-black text-xs px-6 py-2.5 rounded-xl hover:bg-emerald-400 transition-all shadow-lg"
+        >
+          Voltar ao Meu Painel
+        </button>
+      </div>
+    );
+  }
 
   if (!quizAtivo || !perguntaAtual) {
     return (

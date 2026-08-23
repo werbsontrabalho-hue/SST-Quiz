@@ -9,7 +9,7 @@
 // ============================================================
 
 // Importações do React: hooks para estado, efeitos e refs
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 // Contexto global SST: fornece os dados e ações de negócio (usuários, setores, campanhas, etc.)
 import { useSST } from '../../context/SSTContext';
 // Tipagens usadas nos formulários e estados de edição
@@ -651,6 +651,15 @@ export const AdminManagementView: React.FC = () => {
     return pertencaEmpresa && u.perfil !== 'super_admin';
   });
 
+  // Lista de setores da empresa atual (isola setores de outras empresas no dropdown e listagens)
+  const setoresEmpresa = useMemo(() => {
+    return setores.filter(s => 
+      s.empresa_id === empresa.id || 
+      s.empresa_id === currentUser.empresa_id || 
+      (!s.empresa_id && empresas.length <= 1)
+    );
+  }, [setores, empresa.id, currentUser.empresa_id, empresas.length]);
+
   // ============================================================
   // Renderização da interface (JSX)
   // ============================================================
@@ -730,7 +739,7 @@ export const AdminManagementView: React.FC = () => {
 
             {/* Exporta os colaboradores da empresa para arquivo CSV */}
             <button
-              onClick={() => triggerDownloadCSV('usuarios_empresa_sst.csv', exportUsuariosToCSV(usuariosEmpresa, setores))}
+              onClick={() => triggerDownloadCSV('usuarios_empresa_sst.csv', exportUsuariosToCSV(usuariosEmpresa, setoresEmpresa))}
               className="bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 text-xs font-bold px-3 py-1.5 rounded-xl flex items-center space-x-1.5 transition-all"
               title="Exportar colaboradores para planilha CSV"
             >
@@ -763,6 +772,7 @@ export const AdminManagementView: React.FC = () => {
                 setPerfilUser('colaborador');
                 setIsInstrutorUser(false);
                 setUserErrorMsg('');
+                setSetorIdUser(setoresEmpresa[0]?.id || '');
                 setShowNovoUsuarioModal(true);
               }}
               className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-black px-3.5 py-1.5 rounded-xl shadow-md flex items-center space-x-1.5 transition-all"
@@ -1337,7 +1347,7 @@ export const AdminManagementView: React.FC = () => {
                     onChange={(e) => setSetorIdUser(e.target.value)}
                     className="w-full bg-slate-950/80 border border-white/10 rounded-xl p-2.5 text-slate-200"
                   >
-                    {setores.map(s => (
+                    {setoresEmpresa.map(s => (
                       <option key={s.id} value={s.id}>{s.nome}</option>
                     ))}
                   </select>
@@ -2662,7 +2672,7 @@ export const AdminManagementView: React.FC = () => {
                     onChange={(e) => setSetorIdUser(e.target.value)}
                     className="w-full bg-slate-950/80 border border-white/10 rounded-xl p-2.5 text-slate-200"
                   >
-                    {setores.map(s => (
+                    {setoresEmpresa.map(s => (
                       <option key={s.id} value={s.id}>{s.nome}</option>
                     ))}
                   </select>
@@ -2815,7 +2825,7 @@ export const AdminManagementView: React.FC = () => {
             <RelatoriosView
               empresaId={empresa.id}
               usuarios={usuarios}
-              setores={setores}
+              setores={setoresEmpresa}
               quizzes={quizzes}
               desafios={desafios}
               perguntas={perguntas}
