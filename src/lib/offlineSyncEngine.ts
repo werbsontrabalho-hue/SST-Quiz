@@ -152,9 +152,9 @@ export async function processOfflineSyncQueue(): Promise<number> {
         item.synced = true;
         syncedCount++;
       } else {
-        // Se a rota da API ainda não responder, mantemos marcado como offline para retry posterior
-        item.synced = true; // Marca como processado no fallback local
-        syncedCount++;
+        // CORREÇÃO: NÃO marca como synced quando a API falha.
+        // O item permanece na fila para retry na próxima conexão.
+        console.warn(`[OfflineSyncEngine] API retornou ${response?.status || 'indisponível'} para ${item.id}. Mantendo na fila para retry.`);
       }
     } catch (err) {
       console.warn(`[OfflineSyncEngine] Falha ao enviar item ${item.id}. Será tentado na próxima conexão.`, err);

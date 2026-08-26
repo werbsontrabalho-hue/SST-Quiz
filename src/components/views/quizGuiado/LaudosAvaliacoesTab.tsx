@@ -87,15 +87,19 @@ export const LaudosAvaliacoesTab: React.FC<LaudosAvaliacoesTabProps> = ({
         return false;
       }
 
-      // 3. Instrutor: enxerga treinamentos da própria empresa ministrados por ele
+      // 3. Instrutor: enxerga SOMENTE as provas QUE ELE APLICOU.
+      //    REGRA DE NEGÓCIO (autoria da prova): a autoria é de quem aplicou,
+      //    não de quem criou a sala — o criador NÃO tem visão/edição/exclusão
+      //    de provas aplicadas por outros. Fallback apenas para laudos LEGADOS
+      //    sem nenhuma atribuição de instrutor (gravados antes da regra),
+      //    onde o criador da sala era também quem aplicava.
       if (currentUser?.is_instrutor) {
         if (r.instrutor_id && r.instrutor_id === currentUser.id) return true;
         if (r.instrutor_nome && currentUser?.nome && r.instrutor_nome.trim().toLowerCase() === currentUser.nome.trim().toLowerCase()) return true;
-        const sala = (salasQuizGuiado || []).find(s => s.id === r.sala_id);
-        if (sala && (sala.instrutor_id === currentUser.id || sala.empresa_id === currentUser.empresa_id)) return true;
-        if (r.participante_id) {
-          const userPart = (usuarios || []).find(u => u.id === r.participante_id);
-          if (userPart && userPart.empresa_id === currentUser?.empresa_id) return true;
+        // Legado: laudos antigos sem instrutor_id E sem instrutor_nome.
+        if (!r.instrutor_id && !r.instrutor_nome) {
+          const salaLegado = (salasQuizGuiado || []).find(s => s.id === r.sala_id);
+          if (salaLegado && salaLegado.instrutor_id === currentUser.id) return true;
         }
         return false;
       }

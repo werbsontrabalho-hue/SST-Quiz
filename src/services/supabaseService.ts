@@ -76,6 +76,13 @@ function normalizarSalaParaSupabase(sala: any): any {
   if (copia.tempo_por_pergunta !== undefined) {
     copia.tempo_por_pergunta = copia.tempo_por_pergunta_seg;
   }
+  // CORREÇÃO (auditoria): remove campos que existem no TS mas NÃO no banco.
+  // PostgREST rejeita upsert com colunas inexistentes (erro PGRST204).
+  delete copia.quiz_origem_id;
+  delete copia.quiz_origem_nome;
+  delete copia.quiz_origem_criador_id;
+  delete copia.quiz_origem_criador_nome;
+  delete copia.__participantUpdate;
   return copia;
 }
 
@@ -110,7 +117,12 @@ const COLUNAS_SUPORTADAS_RESULTADOS_SST = new Set([
   'porcentagem_acertos',
   'questoes_corretas',
   'total_questoes',
-  'nota_minima_aprovacao'
+  'nota_minima_aprovacao',
+  // CORREÇÃO (auditoria): colunas adicionadas pela migration 032 que estavam
+  // sendo silenciosamente removidas pelo whitelist, causando perda de dados.
+  'sessao_id',
+  'codigo_documento',
+  'sessao_codigo',
 ]);
 
 function normalizarResultadoParaSupabase(resultado: any): any {
@@ -393,10 +405,10 @@ export const supabaseService = {
       if (e6) return { success: false, message: `Erro ao salvar quizzes: ${e6.message}` };
 
       // 7. Saneia e grava os desafios 1v1
-      const sanitizedDesafios = desafios.map(d => ({
-        ...d,
-        empresa_id: validEmpresaIds.has(d.empresa_id) ? d.empresa_id : fallbackEmpresaId
-      }));
+      const sanitizedDesafios = desafios.map(d => {
+        const { aposta_pontos, motivo_vitoria, placar_final, ...rest } = d as any;
+        return { ...rest, empresa_id: validEmpresaIds.has(d.empresa_id) ? d.empresa_id : fallbackEmpresaId };
+      });
       let { error: e7 } = await client.from('desafios_1v1').upsert(sanitizedDesafios);
       if (e7 && (e7.message.includes('decidido_no_desempate') || e7.message.includes('schema cache') || e7.message.includes('column'))) {
         const withoutDecidido = sanitizedDesafios.map(({ decidido_no_desempate, ...rest }: any) => rest);
@@ -675,10 +687,10 @@ export const supabaseService = {
 
       // 7. Sincroniza os desafios 1v1
       if (data.desafios && data.desafios.length > 0) {
-        const sanitizedDesafios = data.desafios.map(d => ({
-          ...d,
-          empresa_id: validEmpresaIds.has(d.empresa_id) ? d.empresa_id : fallbackEmpresaId
-        }));
+        const sanitizedDesafios = data.desafios.map(d => {
+          const { aposta_pontos, motivo_vitoria, placar_final, ...rest } = d as any;
+          return { ...rest, empresa_id: validEmpresaIds.has(d.empresa_id) ? d.empresa_id : fallbackEmpresaId };
+        });
         let { error } = await client.from('desafios_1v1').upsert(sanitizedDesafios);
         if (error && (error.message.includes('decidido_no_desempate') || error.message.includes('schema cache') || error.message.includes('column'))) {
           const withoutDecidido = sanitizedDesafios.map(({ decidido_no_desempate, ...rest }: any) => rest);
@@ -805,7 +817,19 @@ export const supabaseService = {
     const client = getSupabaseClient();
     if (!client) return;
     try {
-      const { error } = await client.from('campanhas').upsert(campanha);
+      let { error } = await client.from('campanhas').upsert(campanha);
+      // CORREÇÃO (auditoria campanhas): bancos antigos podem não ter colunas
+      // novas (ex.: pontos_por_acerto da migration 009). Em vez de falhar em
+      // silêncio, remove a coluna desconhecida e tenta novamente.
+      if (error && (error.message.includes('schema cache') || error.message.includes('column') || error.message.includes('PGRST204'))) {
+        const match = error.message.match(/'([a-z_]+)'/i);
+        if (match && (campanha as any)[match[1]] !== undefined) {
+          const { [match[1]]: _removida, ...semColuna } = campanha as any;
+          console.warn(`upsertCampanha: coluna '${match[1]}' inexistente no banco — tentando novamente sem ela.`);
+          const retry = await client.from('campanhas').upsert(semColuna);
+          error = retry.error;
+        }
+      }
       if (error) console.error('Erro ao upsertCampanha:', error.message);
     } catch (err) {
       console.error('Exceção em upsertCampanha:', err);
@@ -821,6 +845,24 @@ export const supabaseService = {
       if (error) console.error('Erro ao deleteCampanha:', error.message);
     } catch (err) {
       console.error('Exceção em deleteCampanha:', err);
+    }
+  },
+
+  // CORREÇÃO (auditoria campanhas): remove os quizzes PENDENTES gerados por
+  // uma campanha excluída, evitando pendências órfãs no painel do colaborador.
+  // Quizzes concluídos (histórico) NÃO são tocados.
+  async deleteQuizzesPendentesDaCampanha(campanhaId: string) {
+    const client = getSupabaseClient();
+    if (!client) return;
+    try {
+      const { error } = await client
+        .from('quizzes')
+        .delete()
+        .eq('campanha_id', campanhaId)
+        .eq('status', 'pendente');
+      if (error) console.error('Erro ao deleteQuizzesPendentesDaCampanha:', error.message);
+    } catch (err) {
+      console.error('Exceção em deleteQuizzesPendentesDaCampanha:', err);
     }
   },
 
@@ -851,6 +893,10 @@ export const supabaseService = {
     if (!client) return false;
     try {
       const sanitized: any = { ...desafio };
+      // CORREÇÃO (auditoria): remove campos que existem no TS mas NÃO no banco.
+      delete sanitized.aposta_pontos;
+      delete sanitized.motivo_vitoria;
+      delete sanitized.placar_final;
       let { error } = await client.from('desafios_1v1').upsert(sanitized);
 
       if (error && (error.message.includes('decidido_no_desempate') || error.message.includes('schema cache') || error.message.includes('column'))) {
@@ -1068,9 +1114,61 @@ export const supabaseService = {
     const client = getSupabaseClient();
     if (!client || opcoes?.somenteExpress) return;
     try {
-      await client.from('salas_quiz_guiado').upsert(salaNormalizada);
+      // CORREÇÃO: antes o erro do upsert era ENGOLIDO (sem ler .error) e os
+      // 400 do Supabase ficavam invisíveis. Agora loga a causa real.
+      const { error } = await client.from('salas_quiz_guiado').upsert(salaNormalizada);
+      if (error) {
+        console.error('[QUIZ GUIADO] Falha no upsert da sala no Supabase:', error.message, error);
+      }
     } catch (err) {
       console.warn('Aviso ao upsertSalaQuizGuiado no Supabase:', err);
+    }
+  },
+
+  // CORREÇÃO (loop crítico_quiz_guiado — raiz no Supabase): atualiza SOMENTE
+  // as colunas de apresentação/estado da sala, NUNCA toca em `participantes`.
+  // O instrutor usa este RPC para revelar, avançar, iniciar, pausar e retomar,
+  // evitando que o upsert da sala inteira sobrescreva respostas de participantes.
+  async atualizarEstadoApresentacaoSala(salaId: string, campos: {
+    status?: string;
+    estado_apresentacao?: string;
+    revelar_resposta_atual?: boolean;
+    mostrar_ranking?: boolean;
+    pergunta_atual_index?: number;
+    question_started_at?: number;
+    question_ends_at?: number;
+    sessao_id?: string;
+    mostrar_modo_tv?: boolean;
+  }) {
+    const client = getSupabaseClient();
+    if (!client) return;
+    try {
+      // CORREÇÃO (loop PERGUNTA↔GABARITO): antes o erro do RPC era ENGOLIDO
+      // (sem ler `.error`), então uma sala sem a migration 045 aplicada
+      // ficava com revelar_resposta_atual DEFASADO no Supabase enquanto o
+      // Express avançava — e o participante oscilava entre pergunta e
+      // gabarito. Agora o erro é logado de forma VISÍVEL.
+      const { error } = await client.rpc('atualizar_estado_apresentacao_sala', {
+        p_sala_id: salaId,
+        p_status: campos.status ?? null,
+        p_estado_apresentacao: campos.estado_apresentacao ?? null,
+        p_revelar_resposta_atual: campos.revelar_resposta_atual ?? null,
+        p_mostrar_ranking: campos.mostrar_ranking ?? null,
+        p_pergunta_atual_index: campos.pergunta_atual_index ?? null,
+        p_question_started_at: campos.question_started_at ?? null,
+        p_question_ends_at: campos.question_ends_at ?? null,
+        p_sessao_id: campos.sessao_id ?? null,
+        p_mostrar_modo_tv: campos.mostrar_modo_tv ?? null,
+      });
+      if (error) {
+        console.error(
+          '[QUIZ GUIADO] FALHA no RPC atualizar_estado_apresentacao_sala:',
+          error.message,
+          '→ Execute a migration supabase/migrations/045_atualizar_estado_apresentacao_sala.sql no SQL Editor do Supabase!'
+        );
+      }
+    } catch (err) {
+      console.error('[QUIZ GUIADO] Exceção ao atualizar estado de apresentação via RPC:', err);
     }
   },
 
@@ -1087,6 +1185,40 @@ export const supabaseService = {
       await client.from('salas_quiz_guiado').delete().eq('id', id);
     } catch (err) {
       console.warn('Erro ao deleteSalaQuizGuiado:', err);
+    }
+  },
+
+  // CORREÇÃO (loop crítico_quiz_guiado): registra a resposta do participante
+  // no Express SEM sobrescrever o estado de apresentação do instrutor.
+  // Antes, o upsert da sala inteira (`upsertSalaQuizGuiado`) enviava a sala
+  // LOCAL (possivelmente defasada) do participante ao Express, que continha
+  // `revelar_resposta_atual: false` e sobrescrevia o estado atual do instrutor.
+  // Agora usa endpoint dedicado que mexe APENAS no array `participantes`.
+  async registrarRespostaParticipanteExpress(payload: {
+    sala_id: string;
+    participante_id: string;
+    participante_nome?: string;
+    pergunta_id: string;
+    resposta_index: number;
+    tempo_ms: number;
+    respostas?: Record<string, any>;
+    pontuacao_acumulada?: number;
+  }): Promise<{ correta?: boolean; pontosAdicionais?: number } | null> {
+    try {
+      const res = await fetch('/api/salas_quiz_guiado/participante-resposta', {
+        method: 'POST',
+        headers: headersComToken(),
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      if (data && data.success) {
+        return { correta: data.correta, pontosAdicionais: Number(data.pontosAdicionais ?? 0) || 0 };
+      }
+      return null;
+    } catch (err) {
+      console.warn('Falha ao registrar resposta do participante no Express:', err);
+      return null;
     }
   },
 

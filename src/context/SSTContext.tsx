@@ -1061,6 +1061,15 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // CORREÇÃO (reentrância): impede que a sincronização da fila offline rode em
   // paralelo (ex.: evento 'online' + timer de boot) e sobrescreva a fila.
   const syncEmAndamentoRef = useRef(false);
+  // CORREÇÃO (loop PERGUNTA↔GABARITO no participante): guarda MONOTÔNICA de
+  // revelação POR SESSÃO. Quando duas fontes de verdade (Realtime/Supabase vs
+  // polling/Express) divergem — ex.: RPC de apresentação falhou mas o Express
+  // recebeu o POST do instrutor — o participante oscilava entre a pergunta e o
+  // gabarito a cada evento. Esta guarda registra que a pergunta N de uma sala
+  // (na SESSÃO atual) já foi REVELADA e impede que qualquer fonte remota a
+  // "des-revele" para o MESMO índice. A troca de sessao_id (reinício da sala)
+  // reseta a guarda automaticamente em QUALQUER dispositivo.
+  const guardaRevelacaoRef = useRef<Map<string, { sessao: string; idxs: Set<number> }>>(new Map());
   const quizzesRef = useRef(quizzes);
   const currentUserRef = useRef(currentUser);
   useEffect(() => {
@@ -1105,6 +1114,43 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return () => clearTimeout(timer);
   }, []);
 
+  // CORREÇÃO (loop PERGUNTA↔GABARITO): aplica a guarda monotônica de revelação
+  // a uma sala recebida de fonte remota (Realtime ou polling Express). Se a
+  // pergunta atual (índice N) já foi revelada nesta SESSÃO, uma cópia remota
+  // DEFASADA com revelar_resposta_atual=false para o MESMO índice é corrigida
+  // para true — impedindo a oscilação entre as duas telas. Também mantém
+  // `estado_apresentacao` CONSISTENTE com a revelação (o telão/painel leem
+  // esse campo primeiro; sem isso, metade das telas mostrava pergunta e a
+  // outra metade gabarito para o mesmo estado).
+  const aplicarGuardaRevelacao = (sala: SalaQuizGuiado): SalaQuizGuiado => {
+    if (!sala || typeof sala !== 'object') return sala;
+    const idx = Number(sala.pergunta_atual_index ?? 0);
+    const sessaoAtual = sala.sessao_id || '';
+    let entry = guardaRevelacaoRef.current.get(sala.id);
+    if (!entry || entry.sessao !== sessaoAtual) {
+      // Nova sessão detectada (criação/reinício): reseta a guarda.
+      entry = { sessao: sessaoAtual, idxs: new Set<number>() };
+      guardaRevelacaoRef.current.set(sala.id, entry);
+    }
+    if (sala.revelar_resposta_atual === true) {
+      entry.idxs.add(idx);
+      // NÃO mexe em estado_apresentacao aqui: com revelar=true o estado pode
+      // ser legitimamente 'ANSWER_REVEADED' OU 'RANKING_SHOWN'.
+      return sala;
+    }
+    if (entry.idxs.has(idx)) {
+      // Regressão detectada: fonte defasada tentou "des-revelar" a pergunta.
+      return { ...sala, revelar_resposta_atual: true, estado_apresentacao: 'ANSWER_REVEALED' };
+    }
+    return sala;
+  };
+
+  // Limpa a guarda de revelação de uma sala (usado ao iniciar/reiniciar —
+  // nova sessão legítima começa com a pergunta 0 NÃO revelada).
+  const limparGuardaRevelacao = (salaId: string) => {
+    guardaRevelacaoRef.current.delete(salaId);
+  };
+
   // Supabase Realtime Listener (supabase.channel)
   // LISTENER DO SUPABASE EM TEMPO REAL: quando outro dispositivo altera
   // desafios ou cria notificações, este app recebe a mudança na hora e
@@ -1121,8 +1167,26 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             const updated = payload.new as SalaQuizGuiado;
             setSalasQuizGuiado(prev => {
               const idx = prev.findIndex(s => s.id === updated.id);
-              if (idx < 0) return [updated, ...prev];
+              if (idx < 0) return [aplicarGuardaRevelacao(updated), ...prev];
               const local = prev[idx];
+
+              // CORREÇÃO (loop PERGUNTA↔GABARITO — causa raiz confirmada nos
+              // logs): enquanto o RPC de apresentação falhava, o banco ficava
+              // com o sessao_id ANTIGO enquanto Express/local tinham o novo.
+              // Cada evento Realtime então parecia "troca de sessão", resetando
+              // a guarda e regredindo o participante para a PERGUNTA; o polling
+              // seguinte voltava para o GABARITO → oscilação infinita.
+              // Regra: evento de SESSÃO ANTIGA (epoch menor) é IGNORADO por
+              // completo. Só adotamos eventos da mesma sessão ou de uma nova.
+              const sessaoRemotaTs = parseInt(String(updated.sessao_id || '').replace('sess-', ''), 10) || 0;
+              const sessaoLocalTs = parseInt(String(local.sessao_id || '').replace('sess-', ''), 10) || 0;
+              if (
+                updated.sessao_id && local.sessao_id &&
+                updated.sessao_id !== local.sessao_id &&
+                sessaoRemotaTs < sessaoLocalTs
+              ) {
+                return prev;
+              }
 
               // CORREÇÃO (regressão crítica: looping/avanço involuntário):
               // a comparação de timestamps causava oscilação entre local e
@@ -1184,10 +1248,10 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               }
 
               const copy = [...prev];
-              copy[idx] = {
+              copy[idx] = aplicarGuardaRevelacao({
                 ...(eInstrutor ? local : updated),
                 participantes: Array.from(participantsMap.values()),
-              };
+              });
               return copy;
             });
           }
@@ -1317,7 +1381,9 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                     const remoteTime = parseInt((remote.sessao_id || '').replace('sess-', ''), 10) || 0;
                     const localTime = parseInt((local.sessao_id || '').replace('sess-', ''), 10) || 0;
                     if (remoteTime >= localTime) {
-                      mergedMap.set(remote.id, remote);
+                      // CORREÇÃO (loop PERGUNTA↔GABARITO): passa pela guarda —
+                      // detecta a troca de sessão e reseta o estado revelado.
+                      mergedMap.set(remote.id, aplicarGuardaRevelacao(remote));
                       return;
                     } else {
                       return;
@@ -1402,15 +1468,19 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                   if (eInstrutor) {
                     base = local; // instrutor controla o estado de apresentação
                   } else {
-                    base = remote; // participante segue o servidor
+                    // CORREÇÃO (loop PERGUNTA↔GABARITO): o remoto pode estar
+                    // defasado (ex.: RPC de apresentação falhou e o Supabase
+                    // ainda tem revelar=false enquanto o Express já tem true).
+                    // A guarda impede a regressão para o mesmo índice.
+                    base = aplicarGuardaRevelacao(remote); // participante segue o servidor
                   }
 
-                  mergedMap.set(remote.id, {
+                  mergedMap.set(remote.id, aplicarGuardaRevelacao({
                     ...base,
                     // Mescla participantes (respostas/pontuação) das duas fontes,
                     // dando prioridade ao mais recente por resposta.
                     participantes: Array.from(participantsMap.values()),
-                  });
+                  }));
                 }
               });
 
@@ -2043,6 +2113,11 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       id: `camp-${Date.now()}`,
       empresa_id: targetEmpresaId,
       pergunta_ids: camp.pergunta_ids || [],
+      // CORREÇÃO (auditoria campanhas): garante campos obrigatórios mesmo se
+      // algum chamador esquecer de enviá-los (evita horário/setor em branco
+      // na UI e payload incompleto no Supabase).
+      setores_alvo: camp.setores_alvo && camp.setores_alvo.length > 0 ? camp.setores_alvo : ['todos'],
+      horario_disparo: camp.horario_disparo || '08:00',
     };
     setCampanhas(prev => [item, ...prev]);
     supabaseService.upsertCampanha(item);
@@ -2092,9 +2167,16 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // Exclui uma campanha.
+  // CORREÇÃO (auditoria campanhas): antes os quizzes PENDENTES gerados
+  // automaticamente ficavam ÓRFÃOS para sempre (aparecendo como pendentes no
+  // painel do colaborador sem campanha existente). Agora removemos localmente
+  // e na nuvem todos os quizzes vinculados à campanha excluída. Quizzes já
+  // CONCLUÍDOS (histórico de desempenho) são PRESERVADOS.
   const excluirCampanha = (id: string) => {
     setCampanhas(prev => prev.filter(c => c.id !== id));
+    setQuizzes(prev => prev.filter(q => !(q.campanha_id === id && q.status === 'pendente')));
     supabaseService.deleteCampanha(id);
+    supabaseService.deleteQuizzesPendentesDaCampanha(id);
   };
 
   // Create 1v1 Challenge
@@ -4427,7 +4509,7 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             },
           }).catch(err => console.warn('Falha ao atualizar participante via RPC:', err));
         }
-        supabaseService.upsertSalaQuizGuiado(salaAtualizada, { somenteExpress: true });
+        supabaseService.upsertSalaQuizGuiado({ ...salaAtualizada, __participantUpdate: true } as any, { somenteExpress: true });
         return {
           success: true,
           message: 'Reconectado à sala com sucesso.',
@@ -4492,7 +4574,7 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         pontuacao_acumulada: 0,
       }).catch(err => console.warn('Falha ao registrar participante via RPC:', err));
     }
-    supabaseService.upsertSalaQuizGuiado(salaAtualizada, { somenteExpress: true });
+    supabaseService.upsertSalaQuizGuiado({ ...salaAtualizada, __participantUpdate: true } as any, { somenteExpress: true });
 
     return {
       success: true,
@@ -4519,6 +4601,9 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const now = Date.now();
     const tempoSeg = sala.tempo_por_pergunta_seg || sala.tempo_por_pergunta || 30;
+    // CORREÇÃO (loop PERGUNTA↔GABARITO): nova sessão — limpa a guarda para que
+    // a pergunta 0 comece legítimamente NÃO revelada.
+    limparGuardaRevelacao(salaId);
     const updated: SalaQuizGuiado = {
       ...sala,
       status: 'em_andamento',
@@ -4532,7 +4617,20 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
 
     setSalasQuizGuiado(prev => prev.map(s => (s.id === salaId ? updated : s)));
-    supabaseService.upsertSalaQuizGuiado(updated);
+    // CORREÇÃO (loop crítico_quiz_guiado): usa RPC atômico para colunas de
+    // apresentação (não sobrescreve participantes no Supabase).
+    supabaseService.atualizarEstadoApresentacaoSala(salaId, {
+      status: 'em_andamento',
+      estado_apresentacao: 'QUESTION_ACTIVE',
+      pergunta_atual_index: 0,
+      revelar_resposta_atual: false,
+      mostrar_ranking: false,
+      question_started_at: now,
+      question_ends_at: now + (tempoSeg * 1000),
+      sessao_id: updated.sessao_id,
+    });
+    // Express: envia a sala completa (Express merge preserva participantes).
+    supabaseService.upsertSalaQuizGuiado(updated, { somenteExpress: true });
   };
 
   const pausarQuizGuiado = (salaId: string) => {
@@ -4540,7 +4638,9 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!sala) return;
     const updated: SalaQuizGuiado = { ...sala, status: 'pausado' };
     setSalasQuizGuiado(prev => prev.map(s => (s.id === salaId ? updated : s)));
-    supabaseService.upsertSalaQuizGuiado(updated);
+    // CORREÇÃO (loop crítico_quiz_guiado): RPC atômico para colunas de apresentação.
+    supabaseService.atualizarEstadoApresentacaoSala(salaId, { status: 'pausado' });
+    supabaseService.upsertSalaQuizGuiado(updated, { somenteExpress: true });
   };
 
   const retomarQuizGuiado = (salaId: string) => {
@@ -4548,7 +4648,9 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!sala) return;
     const updated: SalaQuizGuiado = { ...sala, status: 'em_andamento' };
     setSalasQuizGuiado(prev => prev.map(s => (s.id === salaId ? updated : s)));
-    supabaseService.upsertSalaQuizGuiado(updated);
+    // CORREÇÃO (loop crítico_quiz_guiado): RPC atômico para colunas de apresentação.
+    supabaseService.atualizarEstadoApresentacaoSala(salaId, { status: 'em_andamento' });
+    supabaseService.upsertSalaQuizGuiado(updated, { somenteExpress: true });
   };
 
   const revelarRespostaAtualQuizGuiado = (salaId: string) => {
@@ -4561,7 +4663,17 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       mostrar_ranking: false,
     };
     setSalasQuizGuiado(prev => prev.map(s => (s.id === salaId ? updated : s)));
-    supabaseService.upsertSalaQuizGuiado(updated);
+    // CORREÇÃO (loop crítico_quiz_guiado — raiz no Supabase): usa RPC
+    // atômico que atualiza SOMENTE colunas de apresentação, NUNCA toca
+    // em `participantes`. O upsert da sala inteira sobrescrevia respostas
+    // de participantes que o instrutor ainda não tinha no estado local.
+    supabaseService.atualizarEstadoApresentacaoSala(salaId, {
+      estado_apresentacao: 'ANSWER_REVEALED',
+      revelar_resposta_atual: true,
+      mostrar_ranking: false,
+    });
+    // Express: envia a sala completa (Express merge preserva participantes).
+    supabaseService.upsertSalaQuizGuiado(updated, { somenteExpress: true });
   };
 
   const exibirRanqueQuizGuiado = (salaId: string) => {
@@ -4592,7 +4704,11 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       mostrar_ranking: true,
     };
     setSalasQuizGuiado(prev => prev.map(s => (s.id === salaId ? updated : s)));
-    supabaseService.upsertSalaQuizGuiado(updated);
+    // CORREÇÃO (loop crítico_quiz_guiado): ranking NÃO faz upsert no Supabase
+    // (que sobrescreveria participantes com dados defasados do instrutor).
+    // O estado de ranking é sincronizado via Realtime (merge de participantes)
+    // e via Express polling.
+    supabaseService.upsertSalaQuizGuiado(updated, { somenteExpress: true });
   };
 
   const reiniciarSalaQuizGuiado = (salaId: string) => {
@@ -4642,7 +4758,9 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           cpf_ou_empresa: p.cpf_ou_empresa,
           is_visitante: p.is_visitante,
           treinamento_titulo: sala.treinamento_titulo || sala.nome || 'Quiz Guiado SST',
-          instrutor_nome: sala.instrutor_nome,
+          // REGRA DE NEGÓCIO (autoria da prova): quem REINICIA/aplica é o
+          // instrutor da prova — não o criador original da sala.
+          instrutor_nome: currentUser?.nome || sala.instrutor_nome,
           data: new Date().toLocaleDateString('pt-BR'),
           total_perguntas: sala.perguntas?.length || 0,
           acertos: 0,
@@ -4680,6 +4798,9 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       historico_sessoes: historicoAtual,
     };
 
+    // CORREÇÃO (loop PERGUNTA↔GABARITO): nova sessão — limpa a guarda para que
+    // a pergunta 0 comece legítimamente NÃO revelada.
+    limparGuardaRevelacao(salaId);
     setSalasQuizGuiado(prev => prev.map(s => (s.id === salaId ? updated : s)));
     supabaseService.upsertSalaQuizGuiado(updated);
 
@@ -4708,6 +4829,15 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const salaTarget = salasQuizGuiado.find(s => s.id === salaId);
     if (!salaTarget) return;
 
+    // REGRA DE NEGÓCIO (autoria da prova): o INSTRUTOR DA PROVA é quem
+    // APLICOU (encerrou) a sessão — não quem CRIOU a sala. Se um admin
+    // aplica uma sala criada por outro colaborador/admin, os laudos são
+    // registrados PARA QUEM APLICOU (e ficam visíveis para ele), respeitando
+    // a hierarquia: super_admin > admin > instrutor. A sala continua
+    // pertencendo ao criador; apenas a AUTORIA DAS PROVAS segue o aplicador.
+    const instrutorAplicadorId = currentUser?.id || salaTarget.instrutor_id;
+    const instrutorAplicadorNome = currentUser?.nome || salaTarget.instrutor_nome;
+
     const isModoAvaliacao = salaTarget.modalidade === 'avaliacao';
     const novosResultados: ResultadoAvaliacaoSST[] = [];
     const participantes = salaTarget.participantes || [];
@@ -4717,15 +4847,29 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const total = perguntas.length;
       let acertos = 0;
 
+      // CORREÇÃO (bug: TODAS as respostas erradas mesmo acertando): o
+      // encerramento é feito no dispositivo do INSTRUTOR, que tem a sala
+      // COMPLETA (gabarito de todas as perguntas). A flag `correta` gravada
+      // em tempo de jogo pode estar errada (validador remoto consultou um
+      // gabarito defasado no banco). Aqui o GABARITO LOCAL é autoridade:
+      // recalculamos cada resposta e REESCREVEMOS as flags incorretas para
+      // que ranking, telas e merges fiquem consistentes com o laudo.
+      const respostasCorrigidas: Record<string, RespostaParticipanteQuiz> = { ...(p.respostas || {}) };
+
       const respostasDetalhadas = perguntas.map(perg => {
         const respMap = p.respostas || {};
         const resp = respMap[perg.id];
         const respIndex = resp ? resp.resposta_index : -1;
-        const correta =
-          resp && typeof resp.correta === 'boolean'
-            ? resp.correta
-            : respIndex === perg.resposta_correta;
+        const gabaritoNum = typeof perg.resposta_correta === 'number' ? perg.resposta_correta : null;
+        const correta = gabaritoNum !== null
+          ? respIndex === gabaritoNum
+          : (resp && typeof resp.correta === 'boolean' ? resp.correta : false);
         if (correta) acertos++;
+
+        // Reescreve a flag corrigida na cópia das respostas do participante.
+        if (resp && resp.correta !== correta) {
+          respostasCorrigidas[perg.id] = { ...resp, correta };
+        }
 
         const alts = normalizeAlternativas(perg.alternativas || (perg as any).opcoes);
         const respFornecidaVal = respIndex >= 0 ? alts[respIndex] : undefined;
@@ -4783,7 +4927,8 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         cpf_ou_empresa: p.cpf_ou_empresa,
         is_visitante: p.is_visitante,
         treinamento_titulo: salaTarget.treinamento_titulo || salaTarget.nome || 'Quiz Guiado SST',
-        instrutor_nome: salaTarget.instrutor_nome,
+        // REGRA DE NEGÓCIO (autoria da prova): instrutor = quem APLICOU.
+        instrutor_nome: instrutorAplicadorNome,
         data: new Date().toLocaleDateString('pt-BR'),
         total_perguntas: total,
         acertos,
@@ -4797,7 +4942,8 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setor_nome: 'Treinamento SST',
         email: p.is_visitante ? 'Visitante' : 'Cadastrado',
         empresa_id: salaTarget.empresa_id,
-        instrutor_id: salaTarget.instrutor_id,
+        // REGRA DE NEGÓCIO (autoria da prova): instrutor = quem APLICOU.
+        instrutor_id: instrutorAplicadorId,
         sala_pin: salaTarget.pin,
         sala_nome: salaTarget.nome || salaTarget.treinamento_titulo || 'Quiz Guiado SST',
         data_finalizacao: new Date().toISOString(),
@@ -4815,6 +4961,9 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       return {
         ...p,
+        // CORREÇÃO (tudo errado mesmo acertando): propaga as flags `correta`
+        // RECALCULADAS pelo gabarito do instrutor.
+        respostas: respostasCorrigidas,
         nota_final: notaFinal,
         situacao,
         concluido: true,
@@ -4879,7 +5028,18 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         question_ends_at: now + (tempoSeg * 1000),
       };
       setSalasQuizGuiado(prev => prev.map(s => (s.id === salaId ? updated : s)));
-      supabaseService.upsertSalaQuizGuiado(updated);
+      // CORREÇÃO (loop crítico_quiz_guiado): usa RPC atômico para colunas de
+      // apresentação (não sobrescreve participantes no Supabase).
+      supabaseService.atualizarEstadoApresentacaoSala(salaId, {
+        pergunta_atual_index: sala.pergunta_atual_index + 1,
+        revelar_resposta_atual: false,
+        mostrar_ranking: false,
+        estado_apresentacao: 'QUESTION_ACTIVE',
+        question_started_at: now,
+        question_ends_at: now + (tempoSeg * 1000),
+      });
+      // Express: envia a sala completa (Express merge preserva participantes).
+      supabaseService.upsertSalaQuizGuiado(updated, { somenteExpress: true });
     } else {
       encerrarSalaQuizGuiado(salaId);
     }
@@ -4998,20 +5158,37 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // a validação server não retornou, NÃO marcamos como errada — deixamos
       // `correta` indefinida para o servidor decidir (e o merge prioriza o
       // servidor quando ele valida).
-      const correta = validacaoServer
-        ? validacaoServer.correta
-        : (typeof pergunta.resposta_correta === 'number'
-            ? respostaIndex === pergunta.resposta_correta
+      //
+      // CORREÇÃO 2 (bug: TODAS as respostas erradas mesmo acertando — logs
+      // 2026-08): os validadores remotos (edge/RPC) consultam o GABARITO DO
+      // BANCO, que pode estar defasado/vazio — e um `false` errado deles
+      // VENCE e se propaga para ranking, tela e laudo. Agora o gabarito LOCAL
+      // é autoridade quando existe: instrutor tem a sala completa; e o
+      // participante tem o gabarito das perguntas JÁ REVELADAS (sanitize
+      // preserva a pergunta atual revelada). Só usa validador remoto quando
+      // NÃO há gabarito local (participante, pergunta ainda não revelada).
+      const gabaritoLocalIdx = typeof pergunta.resposta_correta === 'number'
+        ? pergunta.resposta_correta
+        : undefined;
+      const correta = gabaritoLocalIdx !== undefined
+        ? respostaIndex === gabaritoLocalIdx
+        : (validacaoServer
+            ? validacaoServer.correta
             : undefined);
 
       // Pontuação: no modo competitivo, quanto mais rápido mais pontos ganha.
       // Refactor incremental (Fase 9): extraída para módulo puro testável.
+      // CORREÇÃO 2: pontos do servidor só valem quando a decisão veio dele
+      // (sem gabarito local). Se o gabarito local decidiu, calcula aqui —
+      // evita herdar 0 pontos de um validador remoto que mentiu.
       const pontosAdicionais = calcularPontosQuizGuiado({
         correta,
         estilo: s.estilo,
         tempoMs,
         tempoPorPerguntaSeg: s.tempo_por_pergunta_seg,
-        pontosServer: validacaoServer ? validacaoServer.pontosAdicionais : undefined,
+        pontosServer: gabaritoLocalIdx === undefined && validacaoServer
+          ? validacaoServer.pontosAdicionais
+          : undefined,
       });
 
       const participantes = s.participantes || [];
@@ -5064,11 +5241,25 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           }).catch(err => console.warn('Falha ao atualizar participante via RPC:', err));
         }
       }
-      // Envia ao Express para o polling/participantes em LAN.
-      // CORREÇÃO (Problema 1): somenteExpress — o Supabase é atualizado via
-      // RPC seguro (atualizar_participante_sala), nunca sobrescrevendo o
-      // gabarito com o payload do participante.
-      supabaseService.upsertSalaQuizGuiado(salaComResposta, { somenteExpress: true });
+      // CORREÇÃO (loop crítico_quiz_guiado): envia APENAS os dados do
+      // participante ao Express (não a sala inteira). O endpoint dedicado
+      // atualiza somente o array `participantes` sem tocar nos campos de
+      // apresentação do instrutor (revelar_resposta_atual, pergunta_atual_index,
+      // estado_apresentacao, etc.). Antes, o upsert da sala inteira enviava a
+      // versão LOCAL (potencialmente defasada) do participante ao Express, que
+      // sobrescrevia o estado do instrutor e causava o loop
+      // PERGUNTA→GABARITO→PERGUNTA.
+      const partAtual = participantesAtualizados.find(p => p.id === participanteId);
+      supabaseService.registrarRespostaParticipanteExpress({
+        sala_id: salaId,
+        participante_id: participanteId,
+        participante_nome: partAtual?.nome,
+        pergunta_id: perguntaId,
+        resposta_index: respostaIndex,
+        tempo_ms: tempoMs,
+        respostas: partAtual?.respostas,
+        pontuacao_acumulada: partAtual?.pontuacao_acumulada,
+      }).catch(err => console.warn('Falha ao registrar resposta do participante no Express:', err));
       return salaComResposta;
     }));
   };
@@ -5103,12 +5294,22 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const excluirResultadoAvaliacaoSST = async (resultadoId: string) => {
-    const podeGerenciar =
-      currentUser?.is_instrutor === true ||
-      currentUser?.perfil === 'admin' ||
-      currentUser?.perfil === 'super_admin';
-    if (!podeGerenciar) {
-      throw new Error('Acesso negado: somente Instrutores SST, Administradores ou Super Administradores podem excluir laudos de avaliação.');
+    // REGRA DE NEGÓCIO (autoria da prova): somente:
+    //   - Super Admin: exclui qualquer laudo;
+    //   - Admin da empresa: exclui laudos da PRÓPRIA empresa;
+    //   - Instrutor: exclui APENAS provas QUE ELE APLICOU (nunca provas de
+    //     salas que apenas criou).
+    const alvo = resultadosAvaliacaoSST.find(r => r.id === resultadoId);
+    const eSuperAdmin = currentUser?.perfil === 'super_admin';
+    const eAdminEmpresa = currentUser?.perfil === 'admin' &&
+      (!alvo?.empresa_id || alvo.empresa_id === currentUser.empresa_id);
+    const eAplicador = !!alvo && (
+      (alvo.instrutor_id && alvo.instrutor_id === currentUser?.id) ||
+      (alvo.instrutor_nome && currentUser?.nome &&
+        alvo.instrutor_nome.trim().toLowerCase() === currentUser.nome.trim().toLowerCase())
+    );
+    if (!eSuperAdmin && !eAdminEmpresa && !eAplicador) {
+      throw new Error('Acesso negado: somente quem APLICOU a prova (ou Administrador/Super Administrador da empresa) pode excluir este laudo.');
     }
     setResultadosAvaliacaoSST(prev => prev.filter(r => r.id !== resultadoId));
     if (!isOfflineMode && navigator.onLine) {

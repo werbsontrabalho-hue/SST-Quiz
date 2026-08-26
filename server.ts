@@ -336,6 +336,14 @@ export async function createApp(): Promise<{ app: express.Express; state: AppBac
       ...sala,
       updated_at: new Date().toISOString(),
     };
+    // CORREÇÃO (loop crítico_quiz_guiado): quando o participante envia a sala
+    // inteira (via upsert legado), o flag __participantUpdate indica que APENAS
+    // o array participantes deve ser mesclado — NUNCA os campos de apresentação
+    // do instrutor (revelar_resposta_atual, pergunta_atual_index, etc.).
+    // Isso impede que a versão potencialmente defasada do participante
+    // sobrescreva o estado atualizado do instrutor.
+    const eAtualizacaoParticipante = sala.__participantUpdate === true;
+    delete salaFinal.__participantUpdate;
     if (existente) {
       // CORREÇÃO (Problema 2 — participante travado na tela "Iniciar" ao
       // reiniciar a sala): o instrutor reinicia a sala gerando um NOVO PIN e
@@ -407,13 +415,69 @@ export async function createApp(): Promise<{ app: express.Express; state: AppBac
           salaFinal.estado_apresentacao = sala.estado_apresentacao || existente.estado_apresentacao;
           salaFinal.status = statusEnviado;
           salaFinal.participantes = Array.isArray(sala.participantes) ? sala.participantes : existente.participantes;
-        } else {
+        } else if (eAtualizacaoParticipante) {
+          // CORREÇÃO (loop crítico_quiz_guiado): quando o participante envia
+          // a sala inteira com __participantUpdate, preserva TODOS os campos de
+          // apresentação do instrutor (revelar_resposta_atual, pergunta_atual_index,
+          // estado_apresentacao, question_started_at, question_ends_at, status)
+          // e mescla APENAS o array participantes. Isso impede que a versão
+          // potencialmente defasada do participante sobrescreva o estado do instrutor.
           salaFinal.question_started_at = existente.question_started_at;
           salaFinal.question_ends_at = existente.question_ends_at;
           salaFinal.pergunta_atual_index = existente.pergunta_atual_index;
           salaFinal.estado_apresentacao = existente.estado_apresentacao;
+          salaFinal.revelar_resposta_atual = existente.revelar_resposta_atual;
+          salaFinal.mostrar_ranking = existente.mostrar_ranking;
           salaFinal.status = existente.status;
-          if (sala.status && existente.status === 'em_andamento' && sala.status !== 'em_andamento') {
+          // Mescla participantes: mantém os que o instrutor já conhece,
+          // atualiza apenas os que o participante enviou.
+          if (Array.isArray(sala.participantes)) {
+            const existParts = Array.isArray(existente.participantes) ? existente.participantes : [];
+            const partsMap = new Map<string, any>();
+            existParts.forEach((p: any) => partsMap.set(p.id, p));
+            sala.participantes.forEach((p: any) => {
+              if (p && p.id) partsMap.set(p.id, p);
+            });
+            salaFinal.participantes = Array.from(partsMap.values());
+          } else {
+            salaFinal.participantes = existente.participantes;
+          }
+        } else {
+          // CORREÇÃO (loop PERGUNTA↔GABARITO v2): este branch recebe POSTs com
+          // question_started_at IGUAL ao do servidor — hoje, apenas AÇÕES do
+          // instrutor que não iniciam pergunta nova (revelar gabarito, exibir
+          // ranking, pausar/retomar), pois participantes nunca mais enviam a
+          // sala inteira sem o flag __participantUpdate.
+          //
+          // Antes: o branch restaurava estado/pergunta/status do EXISTENTE mas
+          // deixava revelar/mostrar_ranking do REMETENTE (spread), criando
+          // estado INCONSISTENTE no servidor (ex.: estado='QUESTION_ACTIVE' +
+          // revelar=true). Telas que leem `estado_apresentacao` mostravam
+          // PERGUNTA enquanto as que leem `revelar_resposta_atual` mostravam
+          // GABARITO — oscilação garantida entre os dispositivos.
+          //
+          // Agora: se o remetente está na MESMA pergunta (índice igual), é uma
+          // ação legítima e ATUAL do instrutor → aceita TODA a apresentação
+          // dele. Se o índice do remetente é ANTIGO (replay defasado),
+          // preserva o servidor integralmente (nunca regride).
+          const idxEnviado = Number(sala.pergunta_atual_index ?? 0);
+          const idxExistente = Number(existente.pergunta_atual_index ?? 0);
+          if (idxEnviado >= idxExistente) {
+            salaFinal.estado_apresentacao = sala.estado_apresentacao ?? existente.estado_apresentacao;
+            salaFinal.revelar_resposta_atual = sala.revelar_resposta_atual ?? existente.revelar_resposta_atual;
+            salaFinal.mostrar_ranking = sala.mostrar_ranking ?? existente.mostrar_ranking;
+            salaFinal.status = sala.status || existente.status;
+            salaFinal.question_started_at = sala.question_started_at ?? existente.question_started_at;
+            salaFinal.question_ends_at = sala.question_ends_at ?? existente.question_ends_at;
+            salaFinal.pergunta_atual_index = idxExistente;
+          } else {
+            // Replay defasado: preserva TODOS os campos de apresentação.
+            salaFinal.question_started_at = existente.question_started_at;
+            salaFinal.question_ends_at = existente.question_ends_at;
+            salaFinal.pergunta_atual_index = existente.pergunta_atual_index;
+            salaFinal.estado_apresentacao = existente.estado_apresentacao;
+            salaFinal.revelar_resposta_atual = existente.revelar_resposta_atual;
+            salaFinal.mostrar_ranking = existente.mostrar_ranking;
             salaFinal.status = existente.status;
           }
         }
@@ -485,6 +549,96 @@ export async function createApp(): Promise<{ app: express.Express; state: AppBac
     }
 
     res.json({ success: true, correta, pontosAdicionais, code: "OK" });
+  });
+
+  // CORREÇÃO (loop crítico_quiz_guiado): endpoint exclusivo para o
+  // participante registrar sua resposta no Express SEM sobrescrever o
+  // estado de apresentação do instrutor (revelar_resposta_atual,
+  // pergunta_atual_index, etc.). O endpoint original POST /api/salas_quiz_guiado
+  // recebia a sala INTEIRA do participante (potencialmente defasada) e
+  // causava race condition: a versão antiga do participante sobrescrevia
+  // o estado atualizado do instrutor, gerando loop PERGUNTA→GABARITO→PERGUNTA.
+  app.post("/api/salas_quiz_guiado/participante-resposta", rateLimited(app, 120), (req, res) => {
+    const { sala_id, participante_id, participante_nome, pergunta_id, resposta_index, tempo_ms, respostas, pontuacao_acumulada } = req.body || {};
+    if (!sala_id || !participante_id || !pergunta_id || resposta_index === undefined) {
+      res.status(400).json({ success: false, message: "Parâmetros inválidos." });
+      return;
+    }
+    const sala = salasQuizMap.get(String(sala_id));
+    if (!sala) {
+      res.status(404).json({ success: false, message: "Sala não encontrada." });
+      return;
+    }
+
+    // Validação server-side contra o gabarito preservado no Express.
+    const perguntas = Array.isArray(sala.perguntas) ? sala.perguntas : [];
+    const pergunta = perguntas.find((p: any) => String(p.id) === String(pergunta_id));
+    let correta: boolean | undefined;
+    let pontosAdicionais = 0;
+    if (pergunta) {
+      const corretaIndex = Number(pergunta.resposta_correta);
+      correta = Number(resposta_index) === corretaIndex;
+      if (correta) {
+        if (sala.estilo === "competitivo") {
+          const tempoMaxMs = (Number(sala.tempo_por_pergunta_seg ?? 30) || 30) * 1000;
+          const tempoEfetivo = Math.min(Math.max(0, Number(tempo_ms ?? 0)), tempoMaxMs);
+          const ratio = Math.max(0, (tempoMaxMs - tempoEfetivo) / tempoMaxMs);
+          pontosAdicionais = 1000 + Math.round(ratio * 500);
+        } else {
+          pontosAdicionais = 100;
+        }
+      }
+    }
+
+    // Atualiza APENAS os dados do participante — NÃO toca em
+    // revelar_resposta_atual, pergunta_atual_index, estado_apresentacao,
+    // question_started_at ou qualquer campo de apresentação do instrutor.
+    if (!Array.isArray(sala.participantes)) sala.participantes = [];
+    const participantes = sala.participantes;
+    let idx = participantes.findIndex((p: any) => String(p.id) === String(participante_id));
+
+    if (idx < 0) {
+      // Participante não encontrado (visitante LAN / nova sessão): registra.
+      const novoPart = {
+        id: participante_id,
+        nome: participante_nome || 'Participante',
+        respostas: respostas || {},
+        pontuacao_acumulada: pontuacao_acumulada || 0,
+      };
+      if (pergunta_id && !novoPart.respostas[pergunta_id]) {
+        novoPart.respostas[pergunta_id] = {
+          resposta_index: Number(resposta_index),
+          tempo_ms: Number(tempo_ms ?? 0),
+          timestamp: new Date().toISOString(),
+          correta,
+        };
+        novoPart.pontuacao_acumulada = (Number(novoPart.pontuacao_acumulada) || 0) + pontosAdicionais;
+      }
+      participantes.push(novoPart);
+    } else {
+      const p = participantes[idx];
+      // Mescla respostas: usa o payload do participante como base,
+      // mas preserva respostas antigas e prioriza correção já validada.
+      const respostasAtuais = (typeof respostas === 'object' && respostas !== null)
+        ? { ...respostas }
+        : (p.respostas && typeof p.respostas === 'object' ? { ...p.respostas } : {});
+      if (pergunta_id && !respostasAtuais[pergunta_id]) {
+        respostasAtuais[pergunta_id] = {
+          resposta_index: Number(resposta_index),
+          tempo_ms: Number(tempo_ms ?? 0),
+          timestamp: new Date().toISOString(),
+          correta,
+        };
+      }
+      p.respostas = respostasAtuais;
+      p.pontuacao_acumulada = Number(pontuacao_acumulada ?? p.pontuacao_acumulada ?? 0);
+      if (pergunta_id && correta === true) {
+        p.pontuacao_acumulada = (Number(p.pontuacao_acumulada) || 0) + pontosAdicionais;
+      }
+      participantes[idx] = p;
+    }
+
+    res.json({ success: true, correta, pontosAdicionais, code: "PARTICIPANTE_OK" });
   });
 
   // Deletar / Encerrar Sala

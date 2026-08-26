@@ -112,6 +112,19 @@ export const PainelParticipante: React.FC<PainelParticipanteProps> = ({
         : participante.respostas[perguntaAtual.id])
     : undefined;
 
+  // CORREÇÃO (bug: todas as respostas apareciam erradas mesmo acertando):
+  // quando a pergunta está REVELADA, o sanitize preserva o `resposta_correta`
+  // dela. Esse gabarito local é autoridade para EXIBIÇÃO — a flag gravada em
+  // tempo de jogo pode ter vindo de um validador remoto com gabarito defasado.
+  const gabaritoPerguntaAtual = perguntaAtual && typeof (perguntaAtual as any).resposta_correta === 'number'
+    ? (perguntaAtual as any).resposta_correta as number
+    : undefined;
+  const corretaEfetiva = respostaExistente
+    ? (gabaritoPerguntaAtual !== undefined
+        ? respostaExistente.resposta_index === gabaritoPerguntaAtual
+        : (respostaExistente as any).correta)
+    : undefined;
+
   useEffect(() => {
     if (respostaExistente) {
       setOpcaoSelecionada(respostaExistente.resposta_index);
@@ -497,9 +510,9 @@ export const PainelParticipante: React.FC<PainelParticipanteProps> = ({
                 <div>
                   <span className="text-[10px] text-slate-400 block font-bold">Sua Resposta:</span>
                   <span className={`font-extrabold text-sm flex items-center space-x-1.5 mt-0.5 ${
-                    respostaExistente.correta === true ? 'text-emerald-400' : respostaExistente.correta === undefined ? 'text-amber-400' : 'text-rose-400'
+                    corretaEfetiva === true ? 'text-emerald-400' : corretaEfetiva === undefined ? 'text-amber-400' : 'text-rose-400'
                   }`}>
-                    <span>{respostaExistente.correta === true ? '🟢' : respostaExistente.correta === undefined ? '⏳' : '🔴'} {opcoesPerguntaAtual[respostaExistente.resposta_index] ?? 'Sua Resposta'}</span>
+                    <span>{corretaEfetiva === true ? '🟢' : corretaEfetiva === undefined ? '⏳' : '🔴'} {opcoesPerguntaAtual[respostaExistente.resposta_index] ?? 'Sua Resposta'}</span>
                   </span>
                 </div>
               ) : (
@@ -513,14 +526,14 @@ export const PainelParticipante: React.FC<PainelParticipanteProps> = ({
             </div>
 
             {/* Badge de Pontuação da Pergunta */}
-            {respostaExistente?.correta === true ? (
+            {corretaEfetiva === true ? (
               <div className="p-4 bg-emerald-500/20 border border-emerald-500/40 rounded-2xl text-center space-y-1">
                 <span className="text-2xl font-black text-emerald-400 block">ACERTOU! 🎉</span>
                 <span className="text-xs font-bold text-emerald-200">
                   Pontuação total acumulada: <strong className="text-white">{participante?.pontuacao_acumulada || 0} pontos</strong>
                 </span>
               </div>
-            ) : respostaExistente && respostaExistente.correta === undefined ? (
+            ) : corretaEfetiva === undefined ? (
               <div className="p-4 bg-amber-500/20 border border-amber-500/40 rounded-2xl text-center space-y-1">
                 <span className="text-lg font-black text-amber-300 block">Resposta registrada — aguardando validação do professor.</span>
               </div>

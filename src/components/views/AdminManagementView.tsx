@@ -10,6 +10,7 @@
 
 // Importações do React: hooks para estado, efeitos e refs
 import React, { useState, useEffect, useRef, useMemo } from 'react';
+
 // Contexto global SST: fornece os dados e ações de negócio (usuários, setores, campanhas, etc.)
 import { useSST } from '../../context/SSTContext';
 // Tipagens usadas nos formulários e estados de edição
@@ -506,6 +507,11 @@ export const AdminManagementView: React.FC = () => {
       descricao: descCampanha.trim(),
       empresa_id: empresa.id,
       frequencia: freqCampanha,
+      // CORREÇÃO (auditoria campanhas): antes estes dois campos obrigatórios
+      // NÃO eram enviados (ficavam undefined) — a UI exibia horário vazio e o
+      // payload ia incompleto ao Supabase.
+      setores_alvo: ['todos'],
+      horario_disparo: horarioInicio || '08:00',
       data_inicio: fullDataInicio,
       data_fim: dataFim,
       ativa: true,
@@ -2227,7 +2233,14 @@ export const AdminManagementView: React.FC = () => {
                       )}
 
                       {/* Lista de níveis da categoria */}
-                      {lista.map((nivel, idx) => (
+                      {lista.map((nivel, idx) => {
+                        // Ref local para o input file oculto desta linha —
+                        // usado pelo botão de upload (padrão botão+ref, que dá
+                        // área de clique TOTAL no botão, ao contrário do
+                        // padrão antigo <label> que tinha área interativa
+                        // limitada).
+                        let uploadInputEl: HTMLInputElement | null = null;
+                        return (
                         <div key={nivel.trofeuId || idx} className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-end bg-white/5 p-2 rounded-lg border border-white/5">
                           {/* Toggle ativo do nível */}
                           <div className="sm:col-span-1 flex items-end justify-center">
@@ -2298,30 +2311,48 @@ export const AdminManagementView: React.FC = () => {
                                 ))}
                               </select>
 
-                              {/* Upload de imagem personalizada da empresa */}
-                              <label className="shrink-0 cursor-pointer bg-white/5 hover:bg-white/10 border border-white/15 rounded-lg p-1.5 text-slate-300 transition-all" title="Enviar imagem personalizada">
-                                <Upload className="w-4 h-4" />
-                                <input
-                                  type="file"
-                                  accept="image/*"
-                                  className="hidden"
-                                  onChange={(e) => {
-                                    const file = e.target.files?.[0];
-                                    if (!file) return;
-                                    const reader = new FileReader();
-                                    reader.onload = () => {
-                                      const dataUrl = reader.result as string;
-                                      // Comprime a imagem para não sobrecarregar o localStorage/Supabase
-                                      compressImageFile(file).then((compressed) => {
-                                        atualizarNivelTrofeu(cat.chave, idx, { imagem: compressed || dataUrl });
-                                      }).catch(() => {
-                                        atualizarNivelTrofeu(cat.chave, idx, { imagem: dataUrl });
-                                      });
-                                    };
-                                    reader.readAsDataURL(file);
-                                  }}
-                                />
-                              </label>
+                              {/* Upload de imagem personalizada da empresa.
+                                  CORREÇÃO (área de clique limitada): antes era
+                                  um <label> com input oculto dentro — o clique
+                                  só funcionava em parte do elemento. Agora é
+                                  um <button> real (type="button") que dispara
+                                  o input via ref.
+                                  USABILIDADE: alvo de toque 44×44px (recomendação
+                                  WCAG/Apple HIG) + zona de clique ESTENDIDA
+                                  invisível (after:-inset-1.5) ao redor do botão,
+                                  sem alterar o layout visual da linha. */}
+                              <button
+                                type="button"
+                                onClick={() => uploadInputEl?.click()}
+                                title="Enviar imagem personalizada"
+                                aria-label="Enviar imagem personalizada do troféu"
+                                className="shrink-0 cursor-pointer relative w-11 h-11 flex items-center justify-center bg-white/5 hover:bg-white/10 active:bg-white/20 border border-white/15 hover:border-emerald-400/60 rounded-xl text-slate-300 hover:text-white transition-all after:content-[''] after:absolute after:-inset-1.5 after:rounded-xl"
+                              >
+                                <Upload className="w-5 h-5" />
+                              </button>
+                              <input
+                                ref={(el) => { uploadInputEl = el; }}
+                                type="file"
+                                accept="image/*"
+                                className="hidden"
+                                onChange={(e) => {
+                                  const file = e.target.files?.[0];
+                                  if (!file) return;
+                                  const reader = new FileReader();
+                                  reader.onload = () => {
+                                    const dataUrl = reader.result as string;
+                                    // Comprime a imagem para não sobrecarregar o localStorage/Supabase
+                                    compressImageFile(file).then((compressed) => {
+                                      atualizarNivelTrofeu(cat.chave, idx, { imagem: compressed || dataUrl });
+                                    }).catch(() => {
+                                      atualizarNivelTrofeu(cat.chave, idx, { imagem: dataUrl });
+                                    });
+                                  };
+                                  reader.readAsDataURL(file);
+                                  // Permite selecionar o MESMO arquivo novamente depois
+                                  e.target.value = '';
+                                }}
+                              />
                             </div>
                           </div>
 
@@ -2403,7 +2434,8 @@ export const AdminManagementView: React.FC = () => {
                             </div>
                           </div>
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   );
                 })}

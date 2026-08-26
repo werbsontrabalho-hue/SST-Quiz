@@ -125,13 +125,14 @@ export const QuizGuiadoView: React.FC = () => {
         return false;
       }
       if (currentUser?.is_instrutor) {
+        // REGRA DE NEGÓCIO (autoria da prova): instrutor só vê provas QUE ELE
+        // APLICOU — nunca provas de salas que apenas criou.
         if (r.instrutor_id && r.instrutor_id === currentUser.id) return true;
         if (r.instrutor_nome && currentUser?.nome && r.instrutor_nome.trim().toLowerCase() === currentUser.nome.trim().toLowerCase()) return true;
-        const sala = (salasQuizGuiado || []).find(s => s.id === r.sala_id);
-        if (sala && (sala.instrutor_id === currentUser.id || sala.empresa_id === currentUser.empresa_id)) return true;
-        if (r.participante_id) {
-          const userPart = (usuarios || []).find(u => u.id === r.participante_id);
-          if (userPart && userPart.empresa_id === currentUser?.empresa_id) return true;
+        // Legado: laudos antigos sem atribuição — criador era o aplicador.
+        if (!r.instrutor_id && !r.instrutor_nome) {
+          const salaLegado = (salasQuizGuiado || []).find(s => s.id === r.sala_id);
+          if (salaLegado && salaLegado.instrutor_id === currentUser.id) return true;
         }
         return false;
       }
