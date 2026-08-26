@@ -195,6 +195,11 @@ ALTER TABLE public.desafios_1v1 ADD COLUMN IF NOT EXISTS aposta_pontos INT DEFAU
 ALTER TABLE public.desafios_1v1 ADD COLUMN IF NOT EXISTS motivo_vitoria TEXT;
 ALTER TABLE public.desafios_1v1 ADD COLUMN IF NOT EXISTS placar_final TEXT;
 ALTER TABLE public.desafios_1v1 ADD COLUMN IF NOT EXISTS decidido_no_desempate BOOLEAN DEFAULT false;
+ALTER TABLE public.desafios_1v1 ADD COLUMN IF NOT EXISTS data_aceite TIMESTAMP WITH TIME ZONE;
+ALTER TABLE public.desafios_1v1 ADD COLUMN IF NOT EXISTS data_conclusao TIMESTAMP WITH TIME ZONE;
+ALTER TABLE public.desafios_1v1 DROP CONSTRAINT IF EXISTS desafios_1v1_status_check;
+ALTER TABLE public.desafios_1v1 ADD CONSTRAINT desafios_1v1_status_check 
+  CHECK (status IN ('pendente', 'aceito', 'em_andamento', 'concluido', 'recusado', 'expirado', 'cancelado', 'finalizado'));
 ALTER TABLE public.premiacoes ADD COLUMN IF NOT EXISTS custo_pontos INT DEFAULT 300;
 ALTER TABLE public.premiacoes ADD COLUMN IF NOT EXISTS estoque INT DEFAULT 10;
 ALTER TABLE public.premiacoes ADD COLUMN IF NOT EXISTS ativo BOOLEAN DEFAULT true;
@@ -783,10 +788,13 @@ ALTER TABLE public.backups_historico ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Acesso total empresas" ON public.empresas;
 DROP POLICY IF EXISTS "Empresa Isola Empresas" ON public.empresas;
 DROP POLICY IF EXISTS "Super Admin Gerencia Empresas" ON public.empresas;
+DROP POLICY IF EXISTS "Empresas Escrita Bootstrap" ON public.empresas;
 CREATE POLICY "Empresa Isola Empresas" ON public.empresas
-FOR SELECT USING (id = public.user_empresa_id() OR public.is_super_admin());
+FOR SELECT USING (id = public.user_empresa_id() OR public.is_super_admin() OR (NOT EXISTS (SELECT 1 FROM public.empresas LIMIT 1)));
 CREATE POLICY "Super Admin Gerencia Empresas" ON public.empresas
 FOR ALL USING (public.is_super_admin()) WITH CHECK (public.is_super_admin());
+CREATE POLICY "Empresas Escrita Bootstrap" ON public.empresas
+FOR INSERT WITH CHECK (public.is_super_admin() OR (NOT EXISTS (SELECT 1 FROM public.empresas LIMIT 1)));
 
 DROP POLICY IF EXISTS "Acesso total setores" ON public.setores;
 DROP POLICY IF EXISTS "Empresa Isola Setores" ON public.setores;

@@ -9,7 +9,8 @@ import {
   QuizSessao, 
   Desafio1v1, 
   Premiacao,
-  ResgatePremio
+  ResgatePremio,
+  NotificacaoSST
 } from '../types';
 
 // ============================================================
@@ -191,6 +192,7 @@ export const supabaseService = {
     backupsHistorico?: any[];
     salasQuizGuiado?: any[];
     resultadosAvaliacaoSST?: any[];
+    notificacoes?: NotificacaoSST[];
     hasData: boolean;
   }> {
     if (!isSupabaseConfigured()) {
@@ -214,7 +216,8 @@ export const supabaseService = {
         { data: resgatesData, error: rsgErr },
         { data: backupsData, error: bkpErr },
         { data: salasData, error: salasErr },
-        { data: resultadosData, error: resErr }
+        { data: resultadosData, error: resErr },
+        { data: notifsData, error: notifErr }
       ] = await Promise.all([
         client.from('empresas').select('*'),
         client.from('setores').select('*'),
@@ -227,7 +230,8 @@ export const supabaseService = {
         client.from('resgates_premios').select('*'),
         client.from('backups_historico').select('*'),
         client.from('salas_quiz_guiado').select('*'),
-        client.from('resultados_avaliacao_sst').select('*')
+        client.from('resultados_avaliacao_sst').select('*'),
+        client.from('notificacoes').select('*')
       ]);
 
       let usuariosData = resUsuarios.data;
@@ -285,6 +289,18 @@ export const supabaseService = {
         backupsHistorico: backupsData as any[] || undefined,
         salasQuizGuiado: salasNorm || undefined,
         resultadosAvaliacaoSST: Array.isArray(resultadosData) ? resultadosData.map(normalizarResultadoDoSupabase) : undefined,
+        notificacoes: (notifsData as any[] || []).map(n => ({
+          id: n.id,
+          usuario_id: n.usuario_id,
+          empresa_id: n.empresa_id,
+          titulo: n.titulo,
+          mensagem: n.mensagem,
+          tipo: n.tipo || 'sistema',
+          lida: n.lida === true,
+          criada_em: n.criada_em,
+          link_acao: n.link_acao,
+          canal: n.canal
+        })),
         hasData
       };
     } catch (err) {
@@ -396,10 +412,13 @@ export const supabaseService = {
       const { error: e5 } = await client.from('campanhas').upsert(sanitizedCampanhas);
       if (e5) return { success: false, message: `Erro ao salvar campanhas: ${e5.message}` };
 
-      // 6. Saneia e grava os quizzes
+      const validCampanhaIds = new Set(sanitizedCampanhas.map(c => c.id));
+
+      // 6. Saneia e grava os quizzes (garante validação de empresa_id e integridade de campanha_id)
       const sanitizedQuizzes = quizzes.map(q => ({
         ...q,
-        empresa_id: validEmpresaIds.has(q.empresa_id) ? q.empresa_id : fallbackEmpresaId
+        empresa_id: validEmpresaIds.has(q.empresa_id) ? q.empresa_id : fallbackEmpresaId,
+        campanha_id: q.campanha_id && validCampanhaIds.has(q.campanha_id) ? q.campanha_id : null
       }));
       const { error: e6 } = await client.from('quizzes').upsert(sanitizedQuizzes);
       if (e6) return { success: false, message: `Erro ao salvar quizzes: ${e6.message}` };
@@ -540,24 +559,50 @@ export const supabaseService = {
         }
       }
 
-      // Monta o registro com as referências já corrigidas
+      // Monta o registro sanitizado contendo APENAS colunas válidas da tabela usuarios
       const sanitized: any = {
-        ...usuario,
+        id: usuario.id,
         empresa_id: companyIdToUse,
-        setor_id: sectorIdToUse
+        setor_id: sectorIdToUse,
+        nome: usuario.nome,
+        email: usuario.email,
+        perfil: usuario.perfil || 'colaborador',
+        cargo: usuario.cargo || null,
+        avatar: usuario.avatar || null,
+        ativo: usuario.ativo !== false,
+        is_instrutor: usuario.is_instrutor === true,
+        estatisticas: usuario.estatisticas || {},
+        trofeus_temporadas: usuario.trofeus_temporadas || [],
+        ultimo_quiz_data: usuario.estatisticas?.ultimo_quiz_data || (usuario as any).ultimo_quiz_data || null,
       };
 
-      // Se a senha não foi informada na atualização, remove para não sobrescrever
-      if (sanitized.senha === undefined || sanitized.senha === null) {
-        delete sanitized.senha;
+      if (usuario.auth_uid) sanitized.auth_uid = usuario.auth_uid;
+      if (usuario.created_at) sanitized.created_at = usuario.created_at;
+
+      // Se a senha foi informada na atualização, inclui; senão remove para não sobrescrever
+      if (usuario.senha !== undefined && usuario.senha !== null && usuario.senha.trim() !== '') {
+        sanitized.senha = usuario.senha;
       }
 
       let { error } = await client.from('usuarios').upsert(sanitized);
+
+      // Fallback para UPDATE se o upsert for bloqueado por política de INSERT do RLS em registro existente
+      if (error && (error.message.includes('row-level security') || error.code === '42501')) {
+        const { error: updateErr } = await client.from('usuarios').update(sanitized).eq('id', sanitized.id);
+        if (!updateErr) return true;
+        console.error('Erro ao upsertUsuario no Supabase:', error.message);
+        return false;
+      }
+
       // Contorno para schema antigo: remove os campos "ativo" e/ou "is_instrutor" se o banco não os tiver
       if (error && (error.message.includes('ativo') || error.message.includes('is_instrutor') || error.message.includes('schema cache'))) {
         const { ativo, is_instrutor, ...rest } = sanitized;
         const retry = await client.from('usuarios').upsert(rest);
         if (retry.error) {
+          if (retry.error.message.includes('row-level security') || retry.error.code === '42501') {
+            const { error: updateRetryErr } = await client.from('usuarios').update(rest).eq('id', sanitized.id);
+            if (!updateRetryErr) return true;
+          }
           console.error('Erro ao upsertUsuario (retry):', retry.error.message);
           return false;
         }
@@ -666,20 +711,33 @@ export const supabaseService = {
       }
 
       // 5. Sincroniza as campanhas
+      const validCampanhaIds = new Set<string>();
       if (data.campanhas && data.campanhas.length > 0) {
         const sanitizedCampanhas = data.campanhas.map(c => ({
           ...c,
           empresa_id: validEmpresaIds.has(c.empresa_id) ? c.empresa_id : fallbackEmpresaId
         }));
         const { error } = await client.from('campanhas').upsert(sanitizedCampanhas);
-        if (error) erros.push(`campanhas: ${error.message}`);
+        if (error) {
+          erros.push(`campanhas: ${error.message}`);
+        } else {
+          sanitizedCampanhas.forEach(c => validCampanhaIds.add(c.id));
+        }
       }
 
-      // 6. Sincroniza os quizzes
+      // 6. Sincroniza os quizzes (valida integridade de empresa_id e campanha_id)
       if (data.quizzes && data.quizzes.length > 0) {
+        try {
+          const { data: dbCamps } = await client.from('campanhas').select('id');
+          if (dbCamps) {
+            dbCamps.forEach((c: { id: string }) => validCampanhaIds.add(c.id));
+          }
+        } catch (_) {}
+
         const sanitizedQuizzes = data.quizzes.map(q => ({
           ...q,
-          empresa_id: validEmpresaIds.has(q.empresa_id) ? q.empresa_id : fallbackEmpresaId
+          empresa_id: validEmpresaIds.has(q.empresa_id) ? q.empresa_id : fallbackEmpresaId,
+          campanha_id: q.campanha_id && validCampanhaIds.has(q.campanha_id) ? q.campanha_id : null
         }));
         const { error } = await client.from('quizzes').upsert(sanitizedQuizzes);
         if (error) erros.push(`quizzes: ${error.message}`);
@@ -875,6 +933,17 @@ export const supabaseService = {
     try {
       const { error } = await client.from('quizzes').upsert(quiz);
       if (error) {
+        // Se a falha for por chave estrangeira da campanha inexistente, grava com campanha_id null
+        if (error.message?.includes('quizzes_campanha_id_fkey') || (error as any).code === '23503') {
+          console.warn(`[Supabase] Campanha "${quiz.campanha_id}" não encontrada no banco. Gravando quiz "${quiz.id}" com campanha_id nulo para preservar dados.`);
+          const quizSanitizado = { ...quiz, campanha_id: null };
+          const retry = await client.from('quizzes').upsert(quizSanitizado);
+          if (retry.error) {
+            console.error('Erro ao upsertQuiz (retry sem campanha_id):', retry.error.message);
+            return false;
+          }
+          return true;
+        }
         console.error('Erro ao upsertQuiz:', error.message);
         return false;
       }
@@ -892,19 +961,95 @@ export const supabaseService = {
     const client = getSupabaseClient();
     if (!client) return false;
     try {
-      const sanitized: any = { ...desafio };
-      // CORREÇÃO (auditoria): remove campos que existem no TS mas NÃO no banco.
-      delete sanitized.aposta_pontos;
-      delete sanitized.motivo_vitoria;
-      delete sanitized.placar_final;
+      // Garante que empresa_id seja válida
+      const companyIdToUse = (desafio.empresa_id && desafio.empresa_id.trim()) ? desafio.empresa_id.trim() : 'emp-001';
+
+      // Sanitiza estritamente os campos válidos da tabela desafios_1v1
+      const sanitized: any = {
+        id: desafio.id,
+        empresa_id: companyIdToUse,
+        desafiante_id: desafio.desafiante_id,
+        desafiante_setor_id: desafio.desafiante_setor_id || null,
+        desafiado_id: desafio.desafiado_id,
+        desafiado_setor_id: desafio.desafiado_setor_id || null,
+        tema_sorteado: desafio.tema_sorteado || 'SST',
+        status: desafio.status || 'pendente',
+        vale_ponto: desafio.vale_ponto !== false,
+        tipo: desafio.tipo || 'competitivo',
+        aposta_pontos: desafio.aposta_pontos ?? 50,
+        pontuacao_setor: desafio.pontuacao_setor ?? 100,
+        vencedor_id: desafio.vencedor_id || null,
+        vencedor_setor_id: desafio.vencedor_setor_id || null,
+        motivo_vitoria: desafio.motivo_vitoria || null,
+        data_criacao: desafio.data_criacao || new Date().toISOString(),
+        data_aceite: (desafio as any).data_aceite || null,
+        data_conclusao: (desafio as any).data_conclusao || null,
+        perguntas: desafio.perguntas || [],
+        respostas_desafiante: desafio.respostas_desafiante || [],
+        respostas_desafiado: desafio.respostas_desafiado || [],
+        revanche_id: desafio.revanche_id || null
+      };
+
+      // Tenta upsert inicial
       let { error } = await client.from('desafios_1v1').upsert(sanitized);
 
-      if (error && (error.message.includes('decidido_no_desempate') || error.message.includes('schema cache') || error.message.includes('column'))) {
-        console.warn('Retentando upsertDesafio sem colunas potencialmente ausentes no schema cache:', error.message);
-        const { decidido_no_desempate, ...withoutDecidido } = sanitized;
-        const retry = await client.from('desafios_1v1').upsert(withoutDecidido);
-        if (retry.error) {
-          console.error('Erro ao upsertDesafio (retry):', retry.error.message);
+      // 1. Fallback para UPDATE se o upsert for bloqueado por política de INSERT do RLS em registro existente (ex: desafiado atualizando)
+      if (error && (error.message.includes('row-level security') || error.code === '42501')) {
+        const { error: updateErr } = await client.from('desafios_1v1').update(sanitized).eq('id', sanitized.id);
+        if (!updateErr) return true;
+        error = updateErr;
+      }
+
+      // 2. Fallback se o banco remoto possuir a constraint antiga de status (sem 'em_andamento' ou 'cancelado')
+      if (error && (error.message.includes('desafios_1v1_status_check') || error.message.includes('check constraint'))) {
+        console.warn('Status não suportado pela constraint do banco, aplicando fallback de status:', sanitized.status);
+        const fallbackStatus = sanitized.status === 'em_andamento' ? 'aceito' : 'pendente';
+        const sanitizedFallback = { ...sanitized, status: fallbackStatus };
+        
+        const retryStatus = await client.from('desafios_1v1').upsert(sanitizedFallback);
+        if (retryStatus.error && (retryStatus.error.message.includes('row-level security') || retryStatus.error.code === '42501')) {
+          const { error: updateRetryErr } = await client.from('desafios_1v1').update(sanitizedFallback).eq('id', sanitized.id);
+          if (!updateRetryErr) return true;
+          error = updateRetryErr;
+        } else if (!retryStatus.error) {
+          return true;
+        } else {
+          error = retryStatus.error;
+        }
+      }
+
+      // 3. Fallback se houver erro de coluna ausente no cache do schema (ex: aposta_pontos / motivo_vitoria / data_aceite / etc.)
+      if (error && (error.message.includes('schema cache') || error.message.includes('column') || error.message.includes('decidido_no_desempate'))) {
+        console.warn('Retentando upsertDesafio com colunas básicas:', error.message);
+        const { aposta_pontos, motivo_vitoria, data_aceite, data_conclusao, ...minimal } = sanitized;
+        let retryErr: any = null;
+        const retry = await client.from('desafios_1v1').upsert(minimal);
+        
+        if (retry.error && (retry.error.message.includes('row-level security') || retry.error.code === '42501')) {
+          const { error: updateRetryErr } = await client.from('desafios_1v1').update(minimal).eq('id', sanitized.id);
+          if (!updateRetryErr) return true;
+          retryErr = updateRetryErr;
+        } else {
+          retryErr = retry.error;
+        }
+
+        // Se ainda falhar por check constraint de status no retry minimal
+        if (retryErr && (retryErr.message.includes('desafios_1v1_status_check') || retryErr.message.includes('check constraint'))) {
+          const minimalFallback = { ...minimal, status: minimal.status === 'em_andamento' ? 'aceito' : minimal.status };
+          const retryMinStatus = await client.from('desafios_1v1').upsert(minimalFallback);
+          if (retryMinStatus.error && (retryMinStatus.error.message.includes('row-level security') || retryMinStatus.error.code === '42501')) {
+            const { error: updateMinErr } = await client.from('desafios_1v1').update(minimalFallback).eq('id', sanitized.id);
+            if (!updateMinErr) return true;
+            retryErr = updateMinErr;
+          } else if (!retryMinStatus.error) {
+            return true;
+          } else {
+            retryErr = retryMinStatus.error;
+          }
+        }
+
+        if (retryErr) {
+          console.error('Erro ao upsertDesafio (retry):', retryErr.message);
           return false;
         }
         return true;
@@ -1642,6 +1787,66 @@ export const supabaseService = {
     } catch (err) {
       console.warn('Falha ao chamar RPC registrar_marco_sala_quiz_guiado:', err);
       return null;
+    }
+  },
+
+  // --- NOTIFICAÇÕES ---
+  // Insere ou atualiza uma notificação na tabela "notificacoes".
+  async upsertNotificacao(notificacao: NotificacaoSST) {
+    const client = getSupabaseClient();
+    if (!client) return;
+    try {
+      const sanitized: any = {
+        id: notificacao.id,
+        usuario_id: notificacao.usuario_id,
+        empresa_id: (notificacao as any).empresa_id || null,
+        titulo: notificacao.titulo,
+        mensagem: notificacao.mensagem,
+        tipo: notificacao.tipo || 'sistema',
+        lida: notificacao.lida === true,
+        criada_em: notificacao.criada_em || new Date().toISOString(),
+      };
+      let { error } = await client.from('notificacoes').upsert(sanitized);
+      if (error && (error.message.includes('schema cache') || error.message.includes('column'))) {
+        // Retry básico se houver diferença de schema
+        const basic = {
+          id: notificacao.id,
+          usuario_id: notificacao.usuario_id,
+          titulo: notificacao.titulo,
+          mensagem: notificacao.mensagem,
+          tipo: notificacao.tipo || 'sistema',
+          lida: notificacao.lida === true
+        };
+        const retry = await client.from('notificacoes').upsert(basic);
+        error = retry.error;
+      }
+      if (error) console.warn('Aviso ao upsertNotificacao:', error.message);
+    } catch (err) {
+      console.warn('Exceção em upsertNotificacao:', err);
+    }
+  },
+
+  // Marca uma notificação como lida no Supabase
+  async marcarNotificacaoLida(id: string) {
+    const client = getSupabaseClient();
+    if (!client) return;
+    try {
+      const { error } = await client.from('notificacoes').update({ lida: true }).eq('id', id);
+      if (error) console.warn('Aviso ao marcarNotificacaoLida:', error.message);
+    } catch (err) {
+      console.warn('Exceção em marcarNotificacaoLida:', err);
+    }
+  },
+
+  // Deleta uma notificação no Supabase
+  async deleteNotificacao(id: string) {
+    const client = getSupabaseClient();
+    if (!client) return;
+    try {
+      const { error } = await client.from('notificacoes').delete().eq('id', id);
+      if (error) console.warn('Aviso ao deleteNotificacao:', error.message);
+    } catch (err) {
+      console.warn('Exceção em deleteNotificacao:', err);
     }
   }
 };

@@ -317,9 +317,10 @@ export interface ItemSincronizacaoOffline {
 export interface NotificacaoSST {
   id: string;
   usuario_id: string;
+  empresa_id?: string;
   titulo: string;
   mensagem: string;
-  tipo: 'quiz_diario' | 'desafio_1v1' | 'campanha' | 'alerta_sst' | 'certificado';
+  tipo: 'quiz_diario' | 'desafio_1v1' | 'campanha' | 'alerta_sst' | 'certificado' | 'sistema';
   link_acao?: string;
   lida: boolean;
   criada_em: string;

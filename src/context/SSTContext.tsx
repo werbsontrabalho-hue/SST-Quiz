@@ -913,6 +913,11 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // Code is valid: update user password
     // Código válido: atualiza a senha do usuário.
     editarUsuario(target.id, { senha: novaSenha });
+    if (isSupabaseConfigured()) {
+      supabaseService.upsertUsuario({ ...target, senha: novaSenha }).catch(err => {
+        console.warn('Erro ao atualizar senha no Supabase:', err);
+      });
+    }
 
     // Invalidate used code
     // Remove o código usado para não poder ser reutilizado.
@@ -1276,14 +1281,41 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               return [updated, ...prev];
             });
             // Trigger toast alert if target user
-            // Se o desafio envolve o usuário logado, mostra um alerta.
+            // Se o desafio envolve o usuário logado, mostra um alerta e insere na lista de notificações
             if (currentUser && (updated.desafiado_id === currentUser.id || updated.desafiante_id === currentUser.id)) {
+              const isDesafiado = updated.desafiado_id === currentUser.id;
+              const tituloToast = isDesafiado && updated.status === 'pendente' 
+                ? '⚔️ Novo Desafio 1x1 Recebido!' 
+                : '⚡ Atualização de Desafio 1v1';
+              const msgToast = isDesafiado && updated.status === 'pendente'
+                ? `Você foi desafiado no tema ${updated.tema_sorteado}! (Aposta: +${updated.aposta_pontos || 50} pts)`
+                : `O status do desafio sobre ${updated.tema_sorteado} foi atualizado (${updated.status})!`;
+
               dispararNotificacaoLembrete({
-                titulo: '⚡ Atualização de Desafio 1v1',
-                mensagem: `O status do desafio sobre ${updated.tema_sorteado} foi atualizado em tempo real!`,
+                titulo: tituloToast,
+                mensagem: msgToast,
                 tipo: 'desafio_1v1',
                 canal: 'push'
               });
+
+              if (isDesafiado && updated.status === 'pendente') {
+                const notifId = `notif-desafio-${updated.id}`;
+                setNotificacoes(prev => {
+                  if (prev.some(n => n.id === notifId || n.link_acao === updated.id)) return prev;
+                  return [{
+                    id: notifId,
+                    usuario_id: currentUser.id,
+                    empresa_id: updated.empresa_id,
+                    titulo: '⚔️ Novo Desafio 1x1 Recebido!',
+                    mensagem: `Você foi desafiado no tema ${updated.tema_sorteado}! (Aposta: +${updated.aposta_pontos || 50} pts)`,
+                    tipo: 'desafio_1v1',
+                    lida: false,
+                    criada_em: updated.data_criacao || new Date().toISOString(),
+                    link_acao: updated.id,
+                    canal: 'push'
+                  }, ...prev];
+                });
+              }
             }
           }
         })
@@ -1575,14 +1607,25 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // --- Manipuladores de notificações ---
   const marcarNotificacaoComoLida = (id: string) => {
     setNotificacoes(prev => prev.map(n => n.id === id ? { ...n, lida: true } : n));
+    if (isSupabaseConfigured()) {
+      supabaseService.marcarNotificacaoLida(id);
+    }
   };
 
   const marcarTodasNotificacoesComoLidas = () => {
     setNotificacoes(prev => prev.map(n => ({ ...n, lida: true })));
+    if (isSupabaseConfigured()) {
+      notificacoes.forEach(n => {
+        if (!n.lida) supabaseService.marcarNotificacaoLida(n.id);
+      });
+    }
   };
 
   const excluirNotificacao = (id: string) => {
     setNotificacoes(prev => prev.filter(n => n.id !== id));
+    if (isSupabaseConfigured()) {
+      supabaseService.deleteNotificacao(id);
+    }
   };
 
   // Limpa todas as notificações PESSOAIS do usuário logado
@@ -1899,18 +1942,14 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         // sobrescrever o estado (evita a corrida de hidratação com cópia offline).
         supabaseHidratouRef.current = true;
         // Only seed if Supabase database has zero companies registered (forceSeed = false to preserve all existing user data)
-        // Só popula a nuvem se ela estiver completamente vazia (nunca sobrescreve
-        // dados existentes do usuário).
+        // Só popula a nuvem se ela estiver completamente vazia e sem erros de RLS/rede
         if (!data.hasData) {
-          // CORREÇÃO (hidratação/raça): se o usuário já tem dados REAIS no
-          // localStorage (ex.: sessão offline anterior ou restore de backup
-          // feito sem conexão) e a nuvem está vazia, não sobrescreva os dados
-          // locais com os mocks — envia os dados locais para a nuvem vazia.
+          // CORREÇÃO: só envia seed se explicitamente solicitado ou se a nuvem estiver de fato vazia sem forçar sobrescrita
           const temDadosLocaisReais =
             empresas.length > 0 &&
             !empresas.every((e: Empresa) => mockEmpresas.some((m: Empresa) => m.id === e.id));
           if (temDadosLocaisReais) {
-            console.log('Banco de dados Supabase vazio, mas há dados locais reais. Enviando dados locais para a nuvem...');
+            console.log('Banco de dados Supabase não retornou dados. Tentando sincronização inicial de dados locais...');
             await supabaseService.seedInitialDataIfEmpty(
               empresas,
               setores,
@@ -1920,7 +1959,7 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               quizzes,
               desafios,
               premiacoes,
-              true // força o envio dos dados locais para a nuvem vazia
+              false // nunca força com forceSeed=true para respeitar RLS e dados existentes
             );
           } else {
             console.log('Banco de dados Supabase vazio. Inicializando com dados padrão...');
@@ -1933,7 +1972,7 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               mockQuizzesIniciais,
               mockDesafios,
               mockPremiacoes,
-              false // NEVER force seed or overwrite existing records // nunca força sobrescrita
+              false // nunca força com forceSeed=true
             );
           }
           const fresh = await supabaseService.fetchAllData();
@@ -2000,6 +2039,16 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (data.desafios) setDesafios(data.desafios);
           if (data.premiacoes) setPremiacoes(data.premiacoes);
           if (data.resgates) setResgates(data.resgates);
+          if (data.notificacoes && data.notificacoes.length > 0) {
+            setNotificacoes(prev => {
+              const map = new Map<string, NotificacaoSST>();
+              data.notificacoes!.forEach(n => map.set(n.id, n));
+              prev.forEach(n => {
+                if (!map.has(n.id)) map.set(n.id, n);
+              });
+              return Array.from(map.values()).sort((a, b) => new Date(b.criada_em).getTime() - new Date(a.criada_em).getTime());
+            });
+          }
           if (data.salasQuizGuiado && data.salasQuizGuiado.length > 0) {
             setSalasQuizGuiado(data.salasQuizGuiado as SalaQuizGuiado[]);
           }
@@ -2106,7 +2155,7 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // CRUD DE CAMPANHAS
   // Cria uma campanha e gera AUTOMATICAMENTE um quiz (sessão) para cada
   // colaborador da empresa, com as perguntas escolhidas para a campanha.
-  const criarCampanha = (camp: Omit<Campanha, 'id'> & { empresa_id?: string }) => {
+  const criarCampanha = async (camp: Omit<Campanha, 'id'> & { empresa_id?: string }) => {
     const targetEmpresaId = camp.empresa_id || empresa.id;
     const item: Campanha = {
       ...camp,
@@ -2120,7 +2169,7 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       horario_disparo: camp.horario_disparo || '08:00',
     };
     setCampanhas(prev => [item, ...prev]);
-    supabaseService.upsertCampanha(item);
+    await supabaseService.upsertCampanha(item);
 
     // Automatically generate campaign quiz for target collaborators of that company
     // Pega todos os colaboradores da empresa para gerar o quiz da campanha.
@@ -2154,7 +2203,9 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }));
 
       setQuizzes(prev => [...novosQuizzes, ...prev]);
-      novosQuizzes.forEach(q => supabaseService.upsertQuiz(q));
+      for (const q of novosQuizzes) {
+        await supabaseService.upsertQuiz(q);
+      }
     }
   };
 
@@ -2313,6 +2364,7 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const notifDesafio: NotificacaoSST = {
       id: `notif-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
       usuario_id: desafiado.id,
+      empresa_id: empresa.id,
       titulo: '⚔️ Novo Desafio 1x1 Recebido!',
       mensagem: `${currentUser.nome} desafiou você no tema ${temaSorteado}! (Aposta: +${valorAposta} pts p/ Setor)`,
       tipo: 'desafio_1v1',
@@ -2322,6 +2374,9 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       canal: 'push'
     };
     setNotificacoes(prev => [notifDesafio, ...prev]);
+    if (isSupabaseConfigured()) {
+      supabaseService.upsertNotificacao(notifDesafio);
+    }
 
     return novoDesafio;
   };
@@ -2504,6 +2559,7 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const notif1: NotificacaoSST = {
         id: `notif-${Date.now()}-1-${rand1}`,
         usuario_id: desafio.desafiante_id,
+        empresa_id: desafio.empresa_id,
         titulo: '🏆 Desafio 1x1 Concluído!',
         mensagem: msgDesafiante,
         tipo: 'desafio_1v1',
@@ -2515,6 +2571,7 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const notif2: NotificacaoSST = {
         id: `notif-${Date.now()}-2-${rand2}`,
         usuario_id: desafio.desafiado_id,
+        empresa_id: desafio.empresa_id,
         titulo: '🏆 Desafio 1x1 Concluído!',
         mensagem: msgDesafiado,
         tipo: 'desafio_1v1',
@@ -2524,11 +2581,16 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         canal: 'push'
       };
       setNotificacoes(prev => [notif1, notif2, ...prev]);
+      if (isSupabaseConfigured()) {
+        supabaseService.upsertNotificacao(notif1);
+        supabaseService.upsertNotificacao(notif2);
+      }
     } else {
       // Partida continua: avisa o oponente que é a vez dele responder.
       const notifTurn: NotificacaoSST = {
         id: `notif-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
         usuario_id: oponenteId,
+        empresa_id: desafio.empresa_id,
         titulo: '⚡ Sua Vez no Desafio 1x1!',
         mensagem: `${currentUser.nome} respondeu ao desafio em ${desafio.tema_sorteado}. É a sua vez de jogar!`,
         tipo: 'desafio_1v1',
@@ -2538,6 +2600,9 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         canal: 'push'
       };
       setNotificacoes(prev => [notifTurn, ...prev]);
+      if (isSupabaseConfigured()) {
+        supabaseService.upsertNotificacao(notifTurn);
+      }
     }
 
     // Award Points and User Stats if match concluded
