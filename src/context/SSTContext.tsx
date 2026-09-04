@@ -1169,7 +1169,11 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const channel = client.channel('public:realtime_sst_channel')
         .on('postgres_changes', { event: '*', schema: 'public', table: 'salas_quiz_guiado' }, (payload) => {
           if (payload.new) {
-            const updated = payload.new as SalaQuizGuiado;
+            const raw = payload.new as any;
+            const updated: SalaQuizGuiado = {
+              ...raw,
+              status: raw.status === 'finalizada' ? 'concluido' : raw.status
+            };
             setSalasQuizGuiado(prev => {
               const idx = prev.findIndex(s => s.id === updated.id);
               if (idx < 0) return [aplicarGuardaRevelacao(updated), ...prev];
@@ -2052,8 +2056,15 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (data.salasQuizGuiado && data.salasQuizGuiado.length > 0) {
             setSalasQuizGuiado(data.salasQuizGuiado as SalaQuizGuiado[]);
           }
-          if (data.resultadosAvaliacaoSST) {
-            setResultadosAvaliacaoSST(data.resultadosAvaliacaoSST);
+          if (data.resultadosAvaliacaoSST && Array.isArray(data.resultadosAvaliacaoSST)) {
+            setResultadosAvaliacaoSST(prev => {
+              const map = new Map<string, ResultadoAvaliacaoSST>();
+              // Preserva primeiro os existentes locais (caso a nuvem tenha latência ou laudos salvos localmente)
+              prev.forEach(r => { if (r && r.id) map.set(r.id, r); });
+              // Mescla os registros recebidos da nuvem
+              data.resultadosAvaliacaoSST!.forEach((r: ResultadoAvaliacaoSST) => { if (r && r.id) map.set(r.id, r); });
+              return Array.from(map.values());
+            });
           }
           // Converte os backups vindos da nuvem para o formato local.
           if (data.backupsHistorico && data.backupsHistorico.length > 0) {
@@ -4479,7 +4490,7 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  const excluirSalaQuizGuiado = (salaId: string) => {
+  const excluirSalaQuizGuiado = async (salaId: string) => {
     // SECURITY — só quem pode criar pode excluir (instrutor/admin/super_admin).
     const podeGerenciar =
       currentUser?.is_instrutor === true ||
@@ -4488,9 +4499,45 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!podeGerenciar) {
       throw new Error('Acesso negado: somente Instrutores SST, Administradores ou Super Administradores podem excluir salas de Quiz Guiado.');
     }
+
+    // 1. Identifica a sala que está sendo excluída para coletar seus metadados
+    const salaExcluida = salasQuizGuiado.find(s => s.id === salaId);
+
+    // 2. PRESERVAÇÃO INTEGRAL DAS PROVAS E LAUDOS DE AVALIAÇÃO:
+    // Assegura que todas as provas vinculadas a essa sala no estado de avaliações SST
+    // (resultadosAvaliacaoSST) fiquem com seus metadados 100% autossuficientes
+    // (sala_nome, sala_pin, treinamento_titulo, empresa_id, instrutor_id, instrutor_nome).
+    // As provas NUNCA são excluídas!
+    if (salaExcluida) {
+      setResultadosAvaliacaoSST(prev => {
+        let mudou = false;
+        const atualizados = prev.map(r => {
+          if (r.sala_id === salaId) {
+            mudou = true;
+            return {
+              ...r,
+              sala_nome: r.sala_nome || salaExcluida.nome || salaExcluida.treinamento_titulo || 'Quiz Guiado SST',
+              sala_pin: r.sala_pin || salaExcluida.pin || '',
+              treinamento_titulo: r.treinamento_titulo || salaExcluida.treinamento_titulo || salaExcluida.nome || 'Treinamento SST',
+              empresa_id: r.empresa_id || salaExcluida.empresa_id,
+              instrutor_id: r.instrutor_id || salaExcluida.instrutor_id,
+              instrutor_nome: r.instrutor_nome || salaExcluida.instrutor_nome,
+            };
+          }
+          return r;
+        });
+        if (mudou) {
+          safeSetItem('sst_resultados_avaliacao_sst', JSON.stringify(atualizados));
+          idbSet('sst_resultados_avaliacao_sst', JSON.stringify(atualizados));
+        }
+        return atualizados;
+      });
+    }
+
+    // 3. Remove estritamente a sala de salasQuizGuiado
     setSalasQuizGuiado(prev => prev.filter(s => s.id !== salaId));
     if (!isOfflineMode && navigator.onLine) {
-      supabaseService.deleteSalaQuizGuiado(salaId);
+      await supabaseService.deleteSalaQuizGuiado(salaId);
     }
   };
 
@@ -4665,7 +4712,10 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     const now = Date.now();
-    const tempoSeg = sala.tempo_por_pergunta_seg || sala.tempo_por_pergunta || 30;
+    const tempoSeg = sala.tempo_por_pergunta_seg !== undefined
+      ? Number(sala.tempo_por_pergunta_seg)
+      : (sala.tempo_por_pergunta !== undefined ? Number(sala.tempo_por_pergunta) : 30);
+    const questionEndsAt = tempoSeg > 0 ? (now + tempoSeg * 1000) : 0;
     // CORREÇÃO (loop PERGUNTA↔GABARITO): nova sessão — limpa a guarda para que
     // a pergunta 0 comece legítimamente NÃO revelada.
     limparGuardaRevelacao(salaId);
@@ -4677,7 +4727,7 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       revelar_resposta_atual: false,
       mostrar_ranking: false,
       question_started_at: now,
-      question_ends_at: now + (tempoSeg * 1000),
+      question_ends_at: questionEndsAt,
       sessao_id: sala.sessao_id || `sess-${now}`,
     };
 
@@ -4691,7 +4741,7 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       revelar_resposta_atual: false,
       mostrar_ranking: false,
       question_started_at: now,
-      question_ends_at: now + (tempoSeg * 1000),
+      question_ends_at: questionEndsAt,
       sessao_id: updated.sessao_id,
     });
     // Express: envia a sala completa (Express merge preserva participantes).
@@ -4834,7 +4884,11 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           nota_minima: 7.0,
           situacao: 'NAO_APROVADO',
           desempenho_por_tema: [],
-          respostas_detalhadas: []
+          respostas_detalhadas: [],
+          empresa_id: sala.empresa_id,
+          instrutor_id: currentUser?.id || sala.instrutor_id,
+          sala_pin: sala.pin,
+          sala_nome: sala.nome || sala.treinamento_titulo || 'Quiz Guiado SST',
         };
       });
 
@@ -5082,7 +5136,10 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // vez, fora do updater, e faz o upsert UMA única vez (antes o efeito
       // colateral rodava dentro do updater, podendo dessincronizar a 2ª sessão).
       const now = Date.now();
-      const tempoSeg = sala.tempo_por_pergunta_seg || sala.tempo_por_pergunta || 30;
+      const tempoSeg = sala.tempo_por_pergunta_seg !== undefined
+        ? Number(sala.tempo_por_pergunta_seg)
+        : (sala.tempo_por_pergunta !== undefined ? Number(sala.tempo_por_pergunta) : 30);
+      const questionEndsAt = tempoSeg > 0 ? (now + tempoSeg * 1000) : 0;
       const updated: SalaQuizGuiado = {
         ...sala,
         pergunta_atual_index: sala.pergunta_atual_index + 1,
@@ -5090,7 +5147,7 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         mostrar_ranking: false,
         estado_apresentacao: 'QUESTION_ACTIVE',
         question_started_at: now,
-        question_ends_at: now + (tempoSeg * 1000),
+        question_ends_at: questionEndsAt,
       };
       setSalasQuizGuiado(prev => prev.map(s => (s.id === salaId ? updated : s)));
       // CORREÇÃO (loop crítico_quiz_guiado): usa RPC atômico para colunas de
@@ -5101,7 +5158,7 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         mostrar_ranking: false,
         estado_apresentacao: 'QUESTION_ACTIVE',
         question_started_at: now,
-        question_ends_at: now + (tempoSeg * 1000),
+        question_ends_at: questionEndsAt,
       });
       // Express: envia a sala completa (Express merge preserva participantes).
       supabaseService.upsertSalaQuizGuiado(updated, { somenteExpress: true });

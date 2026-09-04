@@ -58,7 +58,9 @@ export const PainelInstrutor: React.FC<PainelInstrutorProps> = ({
   const [showConfirmReset, setShowConfirmReset] = useState(false);
   const [copiedPin, setCopiedPin] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
-  const tempoLimiteSeg = sala.tempo_por_pergunta_seg ?? sala.tempo_por_pergunta ?? 30;
+  const tempoLimiteSeg = sala.tempo_por_pergunta_seg !== undefined
+    ? Number(sala.tempo_por_pergunta_seg)
+    : (sala.tempo_por_pergunta !== undefined ? Number(sala.tempo_por_pergunta) : 30);
   const [tempoRestante, setTempoRestante] = useState<number>(tempoLimiteSeg);
 
   const estadoApresentacao: EstadoApresentacaoQuiz = sala.estado_apresentacao || 
@@ -451,7 +453,7 @@ export const PainelInstrutor: React.FC<PainelInstrutorProps> = ({
                 </span>
               </div>
 
-              {sala.tempo_por_pergunta_seg > 0 && (
+              {tempoLimiteSeg > 0 ? (
                 <div className={`flex items-center space-x-2 px-4 py-2 rounded-2xl border font-black text-lg ${
                   tempoRestante <= 5 
                     ? 'bg-rose-500/20 text-rose-300 border-rose-500/50 animate-pulse' 
@@ -459,6 +461,11 @@ export const PainelInstrutor: React.FC<PainelInstrutorProps> = ({
                 }`}>
                   <Clock className="w-5 h-5 text-amber-400" />
                   <span>{tempoRestante}s</span>
+                </div>
+              ) : (
+                <div className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl border border-indigo-500/30 bg-indigo-500/10 text-indigo-300 text-xs font-bold">
+                  <Clock className="w-4 h-4 text-indigo-400" />
+                  <span>Avanço Manual (Sem Limite)</span>
                 </div>
               )}
             </div>

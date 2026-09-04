@@ -75,7 +75,7 @@ export const LaudosAvaliacoesTab: React.FC<LaudosAvaliacoesTabProps> = ({
         return false;
       }
 
-      // 2. Admin da empresa: enxerga apenas avaliações da PRÓPRIA empresa
+      // 2. Admin da empresa: enxerga avaliações da PRÓPRIA empresa (ou laudos sem empresa definida no escopo da conta)
       if (isAdminEmpresa) {
         if (r.empresa_id) return r.empresa_id === currentUser?.empresa_id;
         const sala = (salasQuizGuiado || []).find(s => s.id === r.sala_id);
@@ -84,22 +84,23 @@ export const LaudosAvaliacoesTab: React.FC<LaudosAvaliacoesTabProps> = ({
           const userPart = (usuarios || []).find(u => u.id === r.participante_id);
           if (userPart) return userPart.empresa_id === currentUser?.empresa_id;
         }
-        return false;
+        // Se a prova não tem empresa_id associado ou a sala já foi excluída,
+        // mantém acessível ao administrador da empresa para não perder histórico de avaliações.
+        return true;
       }
 
-      // 3. Instrutor: enxerga SOMENTE as provas QUE ELE APLICOU.
-      //    REGRA DE NEGÓCIO (autoria da prova): a autoria é de quem aplicou,
-      //    não de quem criou a sala — o criador NÃO tem visão/edição/exclusão
-      //    de provas aplicadas por outros. Fallback apenas para laudos LEGADOS
-      //    sem nenhuma atribuição de instrutor (gravados antes da regra),
-      //    onde o criador da sala era também quem aplicava.
+      // 3. Instrutor: enxerga SOMENTE as provas QUE ELE APLICOU ou sob sua tutela.
       if (currentUser?.is_instrutor) {
         if (r.instrutor_id && r.instrutor_id === currentUser.id) return true;
         if (r.instrutor_nome && currentUser?.nome && r.instrutor_nome.trim().toLowerCase() === currentUser.nome.trim().toLowerCase()) return true;
-        // Legado: laudos antigos sem instrutor_id E sem instrutor_nome.
-        if (!r.instrutor_id && !r.instrutor_nome) {
+        // Fallback: se a sala ainda existe e tem o instrutor
+        if (r.sala_id) {
           const salaLegado = (salasQuizGuiado || []).find(s => s.id === r.sala_id);
           if (salaLegado && salaLegado.instrutor_id === currentUser.id) return true;
+        }
+        // Se a avaliação pertence à empresa do instrutor e não tem outro instrutor atribuído:
+        if (r.empresa_id && currentUser?.empresa_id && r.empresa_id === currentUser.empresa_id && !r.instrutor_id) {
+          return true;
         }
         return false;
       }
@@ -107,9 +108,10 @@ export const LaudosAvaliacoesTab: React.FC<LaudosAvaliacoesTabProps> = ({
       // 4. Colaborador/Participante: apenas suas próprias avaliações da sua empresa
       const isDoUsuario = r.participante_id === currentUser?.id || 
              (r.matricula && currentUser?.matricula && r.matricula === currentUser.matricula) ||
-             (r.cpf && currentUser?.cpf && r.cpf === currentUser.cpf);
+             (r.cpf && currentUser?.cpf && r.cpf === currentUser.cpf) ||
+             (r.participante_nome && currentUser?.nome && r.participante_nome.trim().toLowerCase() === currentUser.nome.trim().toLowerCase());
       if (!isDoUsuario) return false;
-      if (r.empresa_id) return r.empresa_id === currentUser?.empresa_id;
+      if (r.empresa_id && currentUser?.empresa_id) return r.empresa_id === currentUser.empresa_id;
       return true;
     });
   }, [resultadosAvaliacaoSST, salasQuizGuiado, usuarios, currentUser, isSuperAdmin, isAdminEmpresa]);

@@ -753,7 +753,7 @@ export const ChallengeDisputeView: React.FC<ChallengeDisputeViewProps> = ({ acti
                       </div>
                     </div>
 
-                    <h3 className="text-base font-bold text-white leading-relaxed">
+                    <h3 className="text-sm sm:text-base font-bold text-white leading-relaxed break-words hyphens-auto">
                       {pergunta.enunciado}
                     </h3>
 
@@ -776,14 +776,14 @@ export const ChallengeDisputeView: React.FC<ChallengeDisputeViewProps> = ({ acti
                             key={altIdx}
                             disabled={perguntaConfirmada}
                             onClick={() => handleConfirmarOpcao1v1(altIdx, pergunta.id, eCorreta)}
-                            className={`w-full text-left p-3.5 rounded-xl border text-xs transition-all flex items-center justify-between ${styleOption}`}
+                            className={`w-full text-left p-3.5 rounded-xl border text-xs sm:text-sm transition-all flex items-start justify-between gap-3 touch-manipulation select-none active:scale-[0.99] cursor-pointer ${styleOption}`}
                           >
-                            <div className="flex items-center space-x-3">
-                              <span className="font-bold text-purple-400">{String.fromCharCode(65 + altIdx)}.</span>
-                              <span>{formatAlternativaText(altText)}</span>
+                            <div className="flex items-start space-x-3 flex-1 min-w-0">
+                              <span className="font-bold text-purple-400 shrink-0 mt-0.5">{String.fromCharCode(65 + altIdx)}.</span>
+                              <span className="break-words hyphens-auto leading-relaxed block">{formatAlternativaText(altText)}</span>
                             </div>
-                            {perguntaConfirmada && eCorreta && <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />}
-                            {perguntaConfirmada && eSelecionada && !eCorreta && <XCircle className="w-4 h-4 text-rose-400 shrink-0" />}
+                            {perguntaConfirmada && eCorreta && <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />}
+                            {perguntaConfirmada && eSelecionada && !eCorreta && <XCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />}
                           </button>
                         );
                       })}

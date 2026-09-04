@@ -105,6 +105,9 @@ export const QuizGuiadoView: React.FC = () => {
   // Meus resultados de avaliação teórica SST
   const meusResultadosSST = (resultadosAvaliacaoSST || []).filter(r =>
     r.participante_id === currentUser?.id ||
+    (r.matricula && currentUser?.matricula && r.matricula === currentUser.matricula) ||
+    (r.cpf && currentUser?.cpf && r.cpf === currentUser.cpf) ||
+    (r.participante_nome && currentUser?.nome && r.participante_nome.trim().toLowerCase() === currentUser.nome.trim().toLowerCase()) ||
     (salaAtivaId && r.sala_id === salaAtivaId)
   );
 
@@ -113,7 +116,7 @@ export const QuizGuiadoView: React.FC = () => {
     const todos = resultadosAvaliacaoSST || [];
     return todos.filter(r => {
       if (isSuperAdmin) return true;
-      if (r.empresa_id && r.empresa_id !== currentUser?.empresa_id) return false;
+      if (r.empresa_id && currentUser?.empresa_id && r.empresa_id !== currentUser.empresa_id) return false;
       if (isAdminEmpresa) {
         if (r.empresa_id) return r.empresa_id === currentUser?.empresa_id;
         const sala = (salasQuizGuiado || []).find(s => s.id === r.sala_id);
@@ -122,25 +125,27 @@ export const QuizGuiadoView: React.FC = () => {
           const userPart = (usuarios || []).find(u => u.id === r.participante_id);
           if (userPart) return userPart.empresa_id === currentUser?.empresa_id;
         }
-        return false;
+        // Se a prova não tem empresa_id associado ou a sala foi excluída, mantém visível ao admin da empresa
+        return true;
       }
       if (currentUser?.is_instrutor) {
-        // REGRA DE NEGÓCIO (autoria da prova): instrutor só vê provas QUE ELE
-        // APLICOU — nunca provas de salas que apenas criou.
         if (r.instrutor_id && r.instrutor_id === currentUser.id) return true;
         if (r.instrutor_nome && currentUser?.nome && r.instrutor_nome.trim().toLowerCase() === currentUser.nome.trim().toLowerCase()) return true;
-        // Legado: laudos antigos sem atribuição — criador era o aplicador.
-        if (!r.instrutor_id && !r.instrutor_nome) {
+        if (r.sala_id) {
           const salaLegado = (salasQuizGuiado || []).find(s => s.id === r.sala_id);
           if (salaLegado && salaLegado.instrutor_id === currentUser.id) return true;
+        }
+        if (r.empresa_id && currentUser?.empresa_id && r.empresa_id === currentUser.empresa_id && !r.instrutor_id) {
+          return true;
         }
         return false;
       }
       const isDoUsuario = r.participante_id === currentUser?.id || 
              (r.matricula && currentUser?.matricula && r.matricula === currentUser.matricula) ||
-             (r.cpf && currentUser?.cpf && r.cpf === currentUser.cpf);
+             (r.cpf && currentUser?.cpf && r.cpf === currentUser.cpf) ||
+             (r.participante_nome && currentUser?.nome && r.participante_nome.trim().toLowerCase() === currentUser.nome.trim().toLowerCase());
       if (!isDoUsuario) return false;
-      if (r.empresa_id) return r.empresa_id === currentUser?.empresa_id;
+      if (r.empresa_id && currentUser?.empresa_id) return r.empresa_id === currentUser.empresa_id;
       return true;
     }).length;
   }, [resultadosAvaliacaoSST, salasQuizGuiado, usuarios, currentUser, isSuperAdmin, isAdminEmpresa]);

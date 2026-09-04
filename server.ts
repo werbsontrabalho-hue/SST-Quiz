@@ -358,15 +358,31 @@ export async function createApp(): Promise<{ app: express.Express; state: AppBac
         String(existente.sessao_id || '') !== '' &&
         String(sala.sessao_id) !== String(existente.sessao_id);
 
-      salaFinal.perguntas = existente.perguntas;
-      salaFinal.empresa_id = existente.empresa_id;
-      salaFinal.instrutor_id = existente.instrutor_id;
-      salaFinal.instrutor_nome = existente.instrutor_nome;
-      salaFinal.treinamento_titulo = existente.treinamento_titulo;
-      salaFinal.modalidade = existente.modalidade;
-      salaFinal.estilo = existente.estilo;
-      salaFinal.nota_minima = existente.nota_minima;
-      salaFinal.tempo_por_pergunta_seg = existente.tempo_por_pergunta_seg;
+      if (eAtualizacaoParticipante) {
+        // Atualização enviada pelo participante: preserva gabarito e metadados do instrutor
+        salaFinal.perguntas = existente.perguntas;
+        salaFinal.empresa_id = existente.empresa_id;
+        salaFinal.instrutor_id = existente.instrutor_id;
+        salaFinal.instrutor_nome = existente.instrutor_nome;
+        salaFinal.treinamento_titulo = existente.treinamento_titulo;
+        salaFinal.modalidade = existente.modalidade;
+        salaFinal.estilo = existente.estilo;
+        salaFinal.nota_minima = existente.nota_minima;
+        salaFinal.tempo_por_pergunta_seg = existente.tempo_por_pergunta_seg;
+      } else {
+        // Atualização do instrutor: aceita novas configurações (perguntas, tempo, notas, etc.)
+        salaFinal.perguntas = Array.isArray(sala.perguntas) && sala.perguntas.length > 0 ? sala.perguntas : existente.perguntas;
+        salaFinal.empresa_id = sala.empresa_id || existente.empresa_id;
+        salaFinal.instrutor_id = sala.instrutor_id || existente.instrutor_id;
+        salaFinal.instrutor_nome = sala.instrutor_nome || existente.instrutor_nome;
+        salaFinal.treinamento_titulo = sala.treinamento_titulo || existente.treinamento_titulo;
+        salaFinal.modalidade = sala.modalidade || existente.modalidade;
+        salaFinal.estilo = sala.estilo || existente.estilo;
+        salaFinal.nota_minima = sala.nota_minima !== undefined ? sala.nota_minima : existente.nota_minima;
+        salaFinal.tempo_por_pergunta_seg = sala.tempo_por_pergunta_seg !== undefined
+          ? sala.tempo_por_pergunta_seg
+          : (sala.tempo_por_pergunta !== undefined ? sala.tempo_por_pergunta : existente.tempo_por_pergunta_seg);
+      }
 
       if (eReinicio) {
         // Reinício: aceita o novo PIN/sessão/estado do instrutor.
@@ -518,10 +534,15 @@ export async function createApp(): Promise<{ app: express.Express; state: AppBac
     let pontosAdicionais = 0;
     if (correta) {
       if (sala.estilo === "competitivo") {
-        const tempoMaxMs = (Number(sala.tempo_por_pergunta_seg ?? 30) || 30) * 1000;
-        const tempoEfetivo = Math.min(Math.max(0, Number(tempo_ms ?? 0)), tempoMaxMs);
-        const ratio = Math.max(0, (tempoMaxMs - tempoEfetivo) / tempoMaxMs);
-        pontosAdicionais = 1000 + Math.round(ratio * 500);
+        const tempoSeg = sala.tempo_por_pergunta_seg !== undefined ? Number(sala.tempo_por_pergunta_seg) : 30;
+        if (tempoSeg > 0) {
+          const tempoMaxMs = tempoSeg * 1000;
+          const tempoEfetivo = Math.min(Math.max(0, Number(tempo_ms ?? 0)), tempoMaxMs);
+          const ratio = Math.max(0, (tempoMaxMs - tempoEfetivo) / tempoMaxMs);
+          pontosAdicionais = 1000 + Math.round(ratio * 500);
+        } else {
+          pontosAdicionais = 1000;
+        }
       } else {
         pontosAdicionais = 100;
       }
@@ -580,10 +601,15 @@ export async function createApp(): Promise<{ app: express.Express; state: AppBac
       correta = Number(resposta_index) === corretaIndex;
       if (correta) {
         if (sala.estilo === "competitivo") {
-          const tempoMaxMs = (Number(sala.tempo_por_pergunta_seg ?? 30) || 30) * 1000;
-          const tempoEfetivo = Math.min(Math.max(0, Number(tempo_ms ?? 0)), tempoMaxMs);
-          const ratio = Math.max(0, (tempoMaxMs - tempoEfetivo) / tempoMaxMs);
-          pontosAdicionais = 1000 + Math.round(ratio * 500);
+          const tempoSeg = sala.tempo_por_pergunta_seg !== undefined ? Number(sala.tempo_por_pergunta_seg) : 30;
+          if (tempoSeg > 0) {
+            const tempoMaxMs = tempoSeg * 1000;
+            const tempoEfetivo = Math.min(Math.max(0, Number(tempo_ms ?? 0)), tempoMaxMs);
+            const ratio = Math.max(0, (tempoMaxMs - tempoEfetivo) / tempoMaxMs);
+            pontosAdicionais = 1000 + Math.round(ratio * 500);
+          } else {
+            pontosAdicionais = 1000;
+          }
         } else {
           pontosAdicionais = 100;
         }
@@ -650,7 +676,24 @@ export async function createApp(): Promise<{ app: express.Express; state: AppBac
       return;
     }
     const id = req.params.id;
+    const salaRemovida = salasQuizMap.get(id);
     salasQuizMap.delete(id);
+
+    // PRESERVAÇÃO INTEGRAL DE PROVAS: Nenhuma avaliação é removida ao deletar a sala.
+    // Desvincula sala_id para null e assegura preenchimento dos metadados autônomos.
+    if (salaRemovida) {
+      for (const r of resultadosAvaliacaoArray) {
+        if (r && r.sala_id === id) {
+          r.sala_id = null;
+          r.sala_nome = r.sala_nome || salaRemovida.nome || salaRemovida.treinamento_titulo || 'Quiz Guiado SST';
+          r.sala_pin = r.sala_pin || salaRemovida.pin || '';
+          r.treinamento_titulo = r.treinamento_titulo || salaRemovida.treinamento_titulo || salaRemovida.nome || 'Treinamento SST';
+          r.empresa_id = r.empresa_id || salaRemovida.empresa_id;
+          r.instrutor_id = r.instrutor_id || salaRemovida.instrutor_id;
+          r.instrutor_nome = r.instrutor_nome || salaRemovida.instrutor_nome;
+        }
+      }
+    }
     res.json({ success: true });
   });
 

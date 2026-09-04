@@ -191,6 +191,9 @@ ALTER TABLE public.salas_quiz_guiado ADD COLUMN IF NOT EXISTS historico_sessoes 
 ALTER TABLE public.salas_quiz_guiado ADD COLUMN IF NOT EXISTS posicoes_anteriores JSONB DEFAULT '{}'::jsonb;
 ALTER TABLE public.salas_quiz_guiado ADD COLUMN IF NOT EXISTS nota_minima_aprovacao NUMERIC;
 ALTER TABLE public.salas_quiz_guiado ADD COLUMN IF NOT EXISTS tempo_por_pergunta INT;
+ALTER TABLE public.salas_quiz_guiado DROP CONSTRAINT IF EXISTS salas_quiz_guiado_status_check;
+ALTER TABLE public.salas_quiz_guiado ADD CONSTRAINT salas_quiz_guiado_status_check 
+  CHECK (status IN ('aguardando', 'em_andamento', 'finalizada', 'concluido', 'concluida', 'pausado', 'cancelada', 'encerrado', 'aberta', 'fechada'));
 ALTER TABLE public.desafios_1v1 ADD COLUMN IF NOT EXISTS aposta_pontos INT DEFAULT 100;
 ALTER TABLE public.desafios_1v1 ADD COLUMN IF NOT EXISTS motivo_vitoria TEXT;
 ALTER TABLE public.desafios_1v1 ADD COLUMN IF NOT EXISTS placar_final TEXT;
@@ -211,6 +214,10 @@ ALTER TABLE public.empresas ADD COLUMN IF NOT EXISTS historico_temporadas JSONB 
 ALTER TABLE public.setores ADD COLUMN IF NOT EXISTS pontos_totais BIGINT DEFAULT 0;
 ALTER TABLE public.campanhas ADD COLUMN IF NOT EXISTS pontos_por_acerto INT;
 ALTER TABLE public.backups_historico ADD COLUMN IF NOT EXISTS escopo TEXT DEFAULT 'global';
+ALTER TABLE public.resultados_avaliacao_sst ADD COLUMN IF NOT EXISTS empresa_id TEXT;
+ALTER TABLE public.resultados_avaliacao_sst ADD COLUMN IF NOT EXISTS instrutor_id TEXT;
+ALTER TABLE public.resultados_avaliacao_sst ADD COLUMN IF NOT EXISTS instrutor_nome TEXT;
+ALTER TABLE public.resultados_avaliacao_sst ADD COLUMN IF NOT EXISTS sala_pin TEXT;
 ALTER TABLE public.resultados_avaliacao_sst ADD COLUMN IF NOT EXISTS matricula TEXT;
 ALTER TABLE public.resultados_avaliacao_sst ADD COLUMN IF NOT EXISTS cpf TEXT;
 ALTER TABLE public.resultados_avaliacao_sst ADD COLUMN IF NOT EXISTS cargo TEXT;
@@ -222,6 +229,24 @@ ALTER TABLE public.resultados_avaliacao_sst ADD COLUMN IF NOT EXISTS porcentagem
 ALTER TABLE public.resultados_avaliacao_sst ADD COLUMN IF NOT EXISTS questoes_corretas INT;
 ALTER TABLE public.resultados_avaliacao_sst ADD COLUMN IF NOT EXISTS total_questoes INT;
 ALTER TABLE public.resultados_avaliacao_sst ADD COLUMN IF NOT EXISTS nota_minima_aprovacao NUMERIC;
+
+-- Garante que a Foreign Key de resultados_avaliacao_sst para salas_quiz_guiado seja ON DELETE SET NULL (nunca CASCADE)
+DO $$
+DECLARE fk_rec RECORD;
+BEGIN
+  FOR fk_rec IN
+    SELECT tc.constraint_name
+    FROM information_schema.table_constraints tc
+    JOIN information_schema.constraint_column_usage ccu ON tc.constraint_name = ccu.constraint_name
+    WHERE tc.table_name = 'resultados_avaliacao_sst'
+      AND tc.constraint_type = 'FOREIGN KEY'
+      AND ccu.column_name = 'sala_id'
+  LOOP
+    EXECUTE 'ALTER TABLE public.resultados_avaliacao_sst DROP CONSTRAINT IF EXISTS ' || quote_ident(fk_rec.constraint_name);
+  END LOOP;
+  ALTER TABLE public.resultados_avaliacao_sst ADD CONSTRAINT fk_resultados_sala_id FOREIGN KEY (sala_id) REFERENCES public.salas_quiz_guiado(id) ON DELETE SET NULL;
+EXCEPTION WHEN OTHERS THEN NULL;
+END $$;
 
 -- 3. ÍNDICES DE PERFORMANCE
 CREATE INDEX IF NOT EXISTS idx_resgates_usuario  ON public.resgates_premios(usuario_id);
@@ -847,17 +872,56 @@ FOR DELETE USING (public.is_super_admin() OR (public.is_instrutor_ou_admin() AND
 DROP POLICY IF EXISTS "Empresa Isola Resultados Avaliacao" ON public.resultados_avaliacao_sst;
 DROP POLICY IF EXISTS "Acesso total resultados_avaliacao_sst" ON public.resultados_avaliacao_sst;
 DROP POLICY IF EXISTS "Resultados Leitura Publica" ON public.resultados_avaliacao_sst;
+DROP POLICY IF EXISTS "Resultados Leitura Escopo" ON public.resultados_avaliacao_sst;
+DROP POLICY IF EXISTS "Resultados Leitura Autor" ON public.resultados_avaliacao_sst;
 DROP POLICY IF EXISTS "Resultados Insert Participante" ON public.resultados_avaliacao_sst;
 DROP POLICY IF EXISTS "Resultados Update Instrutor" ON public.resultados_avaliacao_sst;
+DROP POLICY IF EXISTS "Resultados Update Escopo" ON public.resultados_avaliacao_sst;
+DROP POLICY IF EXISTS "Resultados Update Autor" ON public.resultados_avaliacao_sst;
 DROP POLICY IF EXISTS "Resultados Delete Instrutor" ON public.resultados_avaliacao_sst;
+DROP POLICY IF EXISTS "Resultados Delete Escopo" ON public.resultados_avaliacao_sst;
+DROP POLICY IF EXISTS "Resultados Delete Autor" ON public.resultados_avaliacao_sst;
 CREATE POLICY "Resultados Leitura Publica" ON public.resultados_avaliacao_sst
 FOR SELECT USING (true);
 CREATE POLICY "Resultados Insert Participante" ON public.resultados_avaliacao_sst
 FOR INSERT WITH CHECK (true);
 CREATE POLICY "Resultados Update Instrutor" ON public.resultados_avaliacao_sst
-FOR UPDATE USING (EXISTS (SELECT 1 FROM public.salas_quiz_guiado s WHERE s.id = public.resultados_avaliacao_sst.sala_id AND (s.empresa_id = public.user_empresa_id() OR public.is_super_admin())));
+FOR UPDATE USING (
+  public.is_super_admin()
+  OR (instrutor_id IS NOT NULL AND instrutor_id = public.usuario_id_atual())
+  OR (empresa_id IS NOT NULL AND empresa_id = public.user_empresa_id())
+  OR (participante_id IS NOT NULL AND participante_id = public.usuario_id_atual())
+);
 CREATE POLICY "Resultados Delete Instrutor" ON public.resultados_avaliacao_sst
-FOR DELETE USING (EXISTS (SELECT 1 FROM public.salas_quiz_guiado s WHERE s.id = public.resultados_avaliacao_sst.sala_id AND (s.empresa_id = public.user_empresa_id() OR public.is_super_admin())));
+FOR DELETE USING (
+  public.is_super_admin()
+  OR (instrutor_id IS NOT NULL AND instrutor_id = public.usuario_id_atual())
+  OR (empresa_id IS NOT NULL AND empresa_id = public.user_empresa_id())
+);
+
+-- CAMPANHAS
+DROP POLICY IF EXISTS "Campanhas Escopo Empresa" ON public.campanhas;
+DROP POLICY IF EXISTS "Campanhas Leitura Empresa" ON public.campanhas;
+DROP POLICY IF EXISTS "Campanhas Insert Gestao" ON public.campanhas;
+DROP POLICY IF EXISTS "Campanhas Update Gestao" ON public.campanhas;
+DROP POLICY IF EXISTS "Campanhas Delete Gestao" ON public.campanhas;
+CREATE POLICY "Campanhas Leitura Empresa" ON public.campanhas FOR SELECT USING (public.modo_legado_anonimo() OR public.is_super_admin() OR empresa_id = public.user_empresa_id() OR public.user_empresa_id() IS NULL);
+CREATE POLICY "Campanhas Insert Gestao" ON public.campanhas FOR INSERT WITH CHECK (public.modo_legado_anonimo() OR public.is_super_admin() OR (public.is_instrutor_ou_admin() AND (empresa_id = public.user_empresa_id() OR public.user_empresa_id() IS NULL)));
+CREATE POLICY "Campanhas Update Gestao" ON public.campanhas FOR UPDATE USING (public.modo_legado_anonimo() OR public.is_super_admin() OR (public.is_instrutor_ou_admin() AND (empresa_id = public.user_empresa_id() OR public.user_empresa_id() IS NULL))) WITH CHECK (public.modo_legado_anonimo() OR public.is_super_admin() OR (public.is_instrutor_ou_admin() AND (empresa_id = public.user_empresa_id() OR public.user_empresa_id() IS NULL)));
+CREATE POLICY "Campanhas Delete Gestao" ON public.campanhas FOR DELETE USING (public.modo_legado_anonimo() OR public.is_super_admin() OR (public.is_instrutor_ou_admin() AND (empresa_id = public.user_empresa_id() OR public.user_empresa_id() IS NULL)));
+
+-- DESAFIOS 1V1
+DROP POLICY IF EXISTS "Desafios Escrita Participante" ON public.desafios_1v1;
+DROP POLICY IF EXISTS "Desafios Update Participante" ON public.desafios_1v1;
+DROP POLICY IF EXISTS "Desafios Leitura Escopo" ON public.desafios_1v1;
+CREATE POLICY "Desafios Leitura Escopo" ON public.desafios_1v1 FOR SELECT USING (public.modo_legado_anonimo() OR desafiante_id = public.usuario_id_atual() OR desafiado_id = public.usuario_id_atual() OR empresa_id = public.user_empresa_id() OR public.is_super_admin() OR public.user_empresa_id() IS NULL);
+CREATE POLICY "Desafios Escrita Participante" ON public.desafios_1v1 FOR INSERT WITH CHECK (public.modo_legado_anonimo() OR desafiante_id = public.usuario_id_atual() OR desafiado_id = public.usuario_id_atual() OR (public.usuario_atual_perfil() IN ('admin', 'super_admin') AND empresa_id = public.user_empresa_id()) OR public.is_super_admin());
+CREATE POLICY "Desafios Update Participante" ON public.desafios_1v1 FOR UPDATE USING (public.modo_legado_anonimo() OR desafiante_id = public.usuario_id_atual() OR desafiado_id = public.usuario_id_atual() OR (public.usuario_atual_perfil() IN ('admin', 'super_admin') AND empresa_id = public.user_empresa_id()) OR public.is_super_admin()) WITH CHECK (public.modo_legado_anonimo() OR desafiante_id = public.usuario_id_atual() OR desafiado_id = public.usuario_id_atual() OR (public.usuario_atual_perfil() IN ('admin', 'super_admin') AND empresa_id = public.user_empresa_id()) OR public.is_super_admin());
+
+-- NOTIFICACOES
+DROP POLICY IF EXISTS "Acesso total notificacoes" ON public.notificacoes;
+DROP POLICY IF EXISTS "Notificacoes Leitura e Escrita" ON public.notificacoes;
+CREATE POLICY "Notificacoes Leitura e Escrita" ON public.notificacoes FOR ALL USING (public.modo_legado_anonimo() OR usuario_id = public.usuario_id_atual() OR public.is_super_admin() OR empresa_id = public.user_empresa_id() OR public.user_empresa_id() IS NULL) WITH CHECK (public.modo_legado_anonimo() OR usuario_id = public.usuario_id_atual() OR public.is_super_admin() OR empresa_id = public.user_empresa_id() OR public.user_empresa_id() IS NULL);
 `}
               </pre>
             </div>

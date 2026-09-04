@@ -51,7 +51,10 @@ export const TelaApresentacaoView: React.FC<TelaApresentacaoViewProps> = ({
   onEncerrarQuiz,
   onReiniciarSala
 }) => {
-  const [tempoRestante, setTempoRestante] = useState<number>(sala.tempo_por_pergunta_seg || 30);
+  const tempoLimiteSeg = sala.tempo_por_pergunta_seg !== undefined
+    ? Number(sala.tempo_por_pergunta_seg)
+    : (sala.tempo_por_pergunta !== undefined ? Number(sala.tempo_por_pergunta) : 30);
+  const [tempoRestante, setTempoRestante] = useState<number>(tempoLimiteSeg);
   const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
   const [showConfirmReset, setShowConfirmReset] = useState<boolean>(false);
 
@@ -67,18 +70,17 @@ export const TelaApresentacaoView: React.FC<TelaApresentacaoViewProps> = ({
      sala.revelar_resposta_atual ? 'ANSWER_REVEALED' : 
      sala.mostrar_ranking ? 'RANKING_SHOWN' : 'QUESTION_ACTIVE');
 
-  // Timer de pergunta sincronizado com o servidor com auto-revelação
+  // Timer de pergunta sincronizado com o servidor com auto-revelação (apenas se houver limite de tempo)
   useEffect(() => {
-    if (estadoApresentacao !== 'QUESTION_ACTIVE') {
-      setTempoRestante(sala.tempo_por_pergunta_seg || 30);
+    if (estadoApresentacao !== 'QUESTION_ACTIVE' || tempoLimiteSeg === 0) {
+      setTempoRestante(tempoLimiteSeg);
       return;
     }
 
     const interval = setInterval(() => {
       const now = Date.now();
       const startedAt = sala.question_started_at || now;
-      const durationSecs = sala.tempo_por_pergunta_seg || 30;
-      const endsAt = sala.question_ends_at || (startedAt + durationSecs * 1000);
+      const endsAt = sala.question_ends_at || (startedAt + tempoLimiteSeg * 1000);
 
       const remSecs = Math.max(0, Math.ceil((endsAt - now) / 1000));
       setTempoRestante(remSecs);
@@ -92,7 +94,7 @@ export const TelaApresentacaoView: React.FC<TelaApresentacaoViewProps> = ({
     }, 100);
 
     return () => clearInterval(interval);
-  }, [estadoApresentacao, sala.question_started_at, sala.question_ends_at, sala.tempo_por_pergunta_seg, onRevelarResposta]);
+  }, [estadoApresentacao, sala.question_started_at, sala.question_ends_at, tempoLimiteSeg, onRevelarResposta]);
 
   // Atalhos de teclado para o instrutor comandar a apresentação sem mouse
   useEffect(() => {
@@ -308,15 +310,22 @@ export const TelaApresentacaoView: React.FC<TelaApresentacaoViewProps> = ({
                 )}
               </div>
 
-              {/* CLOCK TIMER */}
-              <div className={`flex items-center space-x-3 px-6 py-2.5 rounded-2xl border transition-all ${
-                tempoRestante <= 5 
-                  ? 'bg-rose-500/20 border-rose-500/50 text-rose-300 animate-pulse scale-105' 
-                  : 'bg-slate-900/90 border-white/15 text-amber-400'
-              }`}>
-                <Clock className="w-6 h-6" />
-                <span className="text-3xl font-black font-mono tracking-widest">{tempoRestante}s</span>
-              </div>
+              {/* CLOCK TIMER OU BADGE DE AVANÇO MANUAL */}
+              {tempoLimiteSeg > 0 ? (
+                <div className={`flex items-center space-x-3 px-6 py-2.5 rounded-2xl border transition-all ${
+                  tempoRestante <= 5 
+                    ? 'bg-rose-500/20 border-rose-500/50 text-rose-300 animate-pulse scale-105' 
+                    : 'bg-slate-900/90 border-white/15 text-amber-400'
+                }`}>
+                  <Clock className="w-6 h-6" />
+                  <span className="text-3xl font-black font-mono tracking-widest">{tempoRestante}s</span>
+                </div>
+              ) : (
+                <div className="flex items-center space-x-2.5 px-5 py-2.5 rounded-2xl border border-indigo-500/30 bg-indigo-500/10 text-indigo-300 font-bold text-sm shadow-lg">
+                  <Clock className="w-5 h-5 text-indigo-400" />
+                  <span>Avanço Manual (Sem Limite de Tempo)</span>
+                </div>
+              )}
             </div>
 
             {/* ENUNCIADO EM TAMANHO GRANDE DE DATASHOW */}

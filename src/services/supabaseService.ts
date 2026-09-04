@@ -1,5 +1,5 @@
 import { getSupabaseClient, isSupabaseConfigured } from '../lib/supabase';
-import { normalizePergunta } from '../utils/questionHelpers';
+import { normalizePergunta, sanitizePerguntaParaDb } from '../utils/questionHelpers';
 import { 
   Empresa, 
   Setor, 
@@ -71,12 +71,32 @@ function normalizarSalaParaSupabase(sala: any): any {
       ? Number(copia.nota_minima_aprovacao)
       : copia.nota_minima;
   }
-  // Tempo por pergunta: garante um valor inteiro positivo na coluna canônica.
-  const tempo = Number(copia.tempo_por_pergunta_seg ?? copia.tempo_por_pergunta ?? 30);
-  copia.tempo_por_pergunta_seg = isNaN(tempo) || tempo <= 0 ? 30 : Math.round(tempo);
+  // Tempo por pergunta: 0 = sem tempo limite (avanço manual); >0 = segundos
+  const tempoRaw = copia.tempo_por_pergunta_seg !== undefined
+    ? copia.tempo_por_pergunta_seg
+    : copia.tempo_por_pergunta;
+  const numTempo = tempoRaw !== undefined && tempoRaw !== null ? Number(tempoRaw) : 30;
+  copia.tempo_por_pergunta_seg = isNaN(numTempo) || numTempo < 0 ? 30 : Math.round(numTempo);
   if (copia.tempo_por_pergunta !== undefined) {
     copia.tempo_por_pergunta = copia.tempo_por_pergunta_seg;
   }
+
+  // CORREÇÃO (check constraint salas_quiz_guiado_status_check):
+  // O PostgreSQL valida status IN ('aguardando', 'em_andamento', 'finalizada', 'cancelada').
+  // O frontend usa 'concluido', 'concluida', 'encerrado' ou 'pausado'.
+  if (copia.status !== undefined && copia.status !== null) {
+    const st = String(copia.status).toLowerCase().trim();
+    if (st === 'concluido' || st === 'concluida' || st === 'encerrado' || st === 'finalizada' || st === 'fechada') {
+      copia.status = 'finalizada';
+    } else if (st === 'em_andamento' || st === 'pausado' || st === 'aberta' || st === 'ativa') {
+      copia.status = 'em_andamento';
+    } else if (st === 'cancelada') {
+      copia.status = 'cancelada';
+    } else {
+      copia.status = 'aguardando';
+    }
+  }
+
   // CORREÇÃO (auditoria): remove campos que existem no TS mas NÃO no banco.
   // PostgREST rejeita upsert com colunas inexistentes (erro PGRST204).
   delete copia.quiz_origem_id;
@@ -263,6 +283,7 @@ export const supabaseService = {
       }));
       const salasNorm = (salasData as any[] || []).map(s => ({
         ...s,
+        status: s.status === 'finalizada' ? 'concluido' : s.status,
         perguntas: Array.isArray(s.perguntas) ? s.perguntas.map(normalizePergunta) : s.perguntas
       }));
 
@@ -396,12 +417,19 @@ export const supabaseService = {
       }
       if (e3) return { success: false, message: `Erro ao salvar usuários: ${e3.message}` };
 
-      // 4. Saneia e grava as perguntas (valida empresa_id)
-      const sanitizedPerguntas = perguntas.map(p => ({
-        ...p,
-        empresa_id: validEmpresaIds.has(p.empresa_id) ? p.empresa_id : fallbackEmpresaId
-      }));
-      const { error: e4 } = await client.from('perguntas').upsert(sanitizedPerguntas);
+      // 4. Saneia e grava as perguntas (valida empresa_id e remove campos extras como opcoes)
+      const sanitizedPerguntas = perguntas.map(p => sanitizePerguntaParaDb(p, validEmpresaIds, fallbackEmpresaId));
+      let { error: e4 } = await client.from('perguntas').upsert(sanitizedPerguntas);
+      if (e4 && (e4.message.includes('Could not find the') || e4.message.includes('schema cache'))) {
+        const match = e4.message.match(/Could not find the '([^']+)' column/);
+        if (match) {
+          const colName = match[1];
+          const semColunaArr = sanitizedPerguntas.map(({ [colName]: _, ...rest }) => rest);
+          const retry = await client.from('perguntas').upsert(semColunaArr);
+          if (!retry.error) e4 = null;
+          else e4 = retry.error;
+        }
+      }
       if (e4) return { success: false, message: `Erro ao salvar perguntas: ${e4.message}` };
 
       // 5. Saneia e grava as campanhas
@@ -702,11 +730,18 @@ export const supabaseService = {
 
       // 4. Sincroniza as perguntas
       if (data.perguntas && data.perguntas.length > 0) {
-        const sanitizedPerguntas = data.perguntas.map(p => ({
-          ...p,
-          empresa_id: validEmpresaIds.has(p.empresa_id) ? p.empresa_id : fallbackEmpresaId
-        }));
-        const { error } = await client.from('perguntas').upsert(sanitizedPerguntas);
+        const sanitizedPerguntas = data.perguntas.map(p => sanitizePerguntaParaDb(p, validEmpresaIds, fallbackEmpresaId));
+        let { error } = await client.from('perguntas').upsert(sanitizedPerguntas);
+        if (error && (error.message.includes('Could not find the') || error.message.includes('schema cache'))) {
+          const match = error.message.match(/Could not find the '([^']+)' column/);
+          if (match) {
+            const colName = match[1];
+            const semColunaArr = sanitizedPerguntas.map(({ [colName]: _, ...rest }) => rest);
+            const retry = await client.from('perguntas').upsert(semColunaArr);
+            if (!retry.error) error = null;
+            else error = retry.error;
+          }
+        }
         if (error) erros.push(`perguntas: ${error.message}`);
       }
 
@@ -838,7 +873,23 @@ export const supabaseService = {
     const client = getSupabaseClient();
     if (!client) return;
     try {
-      const { error } = await client.from('perguntas').upsert(pergunta);
+      const sanitized = sanitizePerguntaParaDb(pergunta);
+      let { error } = await client.from('perguntas').upsert(sanitized);
+
+      // Resiliência contra colunas que não existam no cache de schema remoto
+      if (error && (error.message.includes('Could not find the') || error.message.includes('schema cache'))) {
+        const match = error.message.match(/Could not find the '([^']+)' column/);
+        if (match && sanitized[match[1]] !== undefined) {
+          const { [match[1]]: _removida, ...semColuna } = sanitized;
+          const retry = await client.from('perguntas').upsert(semColuna);
+          if (!retry.error) {
+            error = null;
+          } else {
+            error = retry.error;
+          }
+        }
+      }
+
       if (error) console.error('Erro ao upsertPergunta:', error.message);
     } catch (err) {
       console.error('Exceção em upsertPergunta:', err);
@@ -849,7 +900,24 @@ export const supabaseService = {
     const client = getSupabaseClient();
     if (!client || !perguntasArr || perguntasArr.length === 0) return;
     try {
-      const { error } = await client.from('perguntas').upsert(perguntasArr);
+      const sanitizedArr = perguntasArr.map(p => sanitizePerguntaParaDb(p));
+      let { error } = await client.from('perguntas').upsert(sanitizedArr);
+
+      // Resiliência contra colunas que não existam no cache de schema remoto
+      if (error && (error.message.includes('Could not find the') || error.message.includes('schema cache'))) {
+        const match = error.message.match(/Could not find the '([^']+)' column/);
+        if (match) {
+          const colName = match[1];
+          const semColunaArr = sanitizedArr.map(({ [colName]: _, ...rest }) => rest);
+          const retry = await client.from('perguntas').upsert(semColunaArr);
+          if (!retry.error) {
+            error = null;
+          } else {
+            error = retry.error;
+          }
+        }
+      }
+
       if (error) console.error('Erro ao upsertPerguntas:', error.message);
     } catch (err) {
       console.error('Exceção em upsertPerguntas:', err);
@@ -875,20 +943,41 @@ export const supabaseService = {
     const client = getSupabaseClient();
     if (!client) return;
     try {
-      let { error } = await client.from('campanhas').upsert(campanha);
+      const sanitized: Record<string, any> = {
+        id: campanha.id,
+        empresa_id: campanha.empresa_id,
+        nome: campanha.nome,
+        descricao: campanha.descricao || '',
+        data_inicio: campanha.data_inicio,
+        data_fim: campanha.data_fim,
+        ativa: campanha.ativa !== false,
+        quantidade_perguntas: campanha.quantidade_perguntas || 5,
+        setores_alvo: Array.isArray(campanha.setores_alvo) && campanha.setores_alvo.length > 0 ? campanha.setores_alvo : ['todos'],
+        pergunta_ids: Array.isArray(campanha.pergunta_ids) ? campanha.pergunta_ids : [],
+        horario_disparo: campanha.horario_disparo || '08:00',
+        pontos_por_acerto: campanha.pontos_por_acerto ?? 10
+      };
+
+      let { error } = await client.from('campanhas').upsert(sanitized);
       // CORREÇÃO (auditoria campanhas): bancos antigos podem não ter colunas
       // novas (ex.: pontos_por_acerto da migration 009). Em vez de falhar em
       // silêncio, remove a coluna desconhecida e tenta novamente.
       if (error && (error.message.includes('schema cache') || error.message.includes('column') || error.message.includes('PGRST204'))) {
         const match = error.message.match(/'([a-z_]+)'/i);
-        if (match && (campanha as any)[match[1]] !== undefined) {
-          const { [match[1]]: _removida, ...semColuna } = campanha as any;
+        if (match && sanitized[match[1]] !== undefined) {
+          const { [match[1]]: _removida, ...semColuna } = sanitized;
           console.warn(`upsertCampanha: coluna '${match[1]}' inexistente no banco — tentando novamente sem ela.`);
           const retry = await client.from('campanhas').upsert(semColuna);
           error = retry.error;
         }
       }
-      if (error) console.error('Erro ao upsertCampanha:', error.message);
+      if (error) {
+        if (error.code === '42501' || error.message?.includes('row-level security')) {
+          console.warn('upsertCampanha: permissão negada por RLS (usuário logado não possui privilégio de gestor ou banco exige migração 053).', error.message);
+        } else {
+          console.error('Erro ao upsertCampanha:', error.message);
+        }
+      }
     } catch (err) {
       console.error('Exceção em upsertCampanha:', err);
     }
@@ -1288,6 +1377,20 @@ export const supabaseService = {
     const client = getSupabaseClient();
     if (!client) return;
     try {
+      let statusNormalizado = campos.status;
+      if (statusNormalizado !== undefined && statusNormalizado !== null) {
+        const st = String(statusNormalizado).toLowerCase().trim();
+        if (st === 'concluido' || st === 'concluida' || st === 'encerrado' || st === 'finalizada' || st === 'fechada') {
+          statusNormalizado = 'finalizada';
+        } else if (st === 'em_andamento' || st === 'pausado' || st === 'aberta' || st === 'ativa') {
+          statusNormalizado = 'em_andamento';
+        } else if (st === 'cancelada') {
+          statusNormalizado = 'cancelada';
+        } else {
+          statusNormalizado = 'aguardando';
+        }
+      }
+
       // CORREÇÃO (loop PERGUNTA↔GABARITO): antes o erro do RPC era ENGOLIDO
       // (sem ler `.error`), então uma sala sem a migration 045 aplicada
       // ficava com revelar_resposta_atual DEFASADO no Supabase enquanto o
@@ -1295,7 +1398,7 @@ export const supabaseService = {
       // gabarito. Agora o erro é logado de forma VISÍVEL.
       const { error } = await client.rpc('atualizar_estado_apresentacao_sala', {
         p_sala_id: salaId,
-        p_status: campos.status ?? null,
+        p_status: statusNormalizado ?? null,
         p_estado_apresentacao: campos.estado_apresentacao ?? null,
         p_revelar_resposta_atual: campos.revelar_resposta_atual ?? null,
         p_mostrar_ranking: campos.mostrar_ranking ?? null,
@@ -1327,6 +1430,22 @@ export const supabaseService = {
     const client = getSupabaseClient();
     if (!client) return;
     try {
+      // BLINDAGEM CONTRA EXCLUSÃO DE PROVAS (ON DELETE CASCADE):
+      // Se a tabela 'resultados_avaliacao_sst' no banco PostgreSQL do usuário tiver
+      // uma Foreign Key com ON DELETE CASCADE, deletar a sala apagaria em cascata
+      // todas as provas e laudos gerados nela.
+      // Para blindar contra isso, primeiro atualizamos 'sala_id' para NULL em todas
+      // as avaliações dessa sala no Supabase. Como sala_id é desvinculado, o CASCADE
+      // do PostgreSQL NÃO atinge nenhuma avaliação!
+      try {
+        await client
+          .from('resultados_avaliacao_sst')
+          .update({ sala_id: null })
+          .eq('sala_id', id);
+      } catch (errDesvincular) {
+        console.warn('Aviso ao desvincular sala_id antes da exclusão:', errDesvincular);
+      }
+
       await client.from('salas_quiz_guiado').delete().eq('id', id);
     } catch (err) {
       console.warn('Erro ao deleteSalaQuizGuiado:', err);
@@ -1415,9 +1534,25 @@ export const supabaseService = {
       const { data, error } = await client.from('resultados_avaliacao_sst').select('*').order('data_finalizacao', { ascending: false });
       if (data && !error && Array.isArray(data)) {
         const normData = data.map(normalizarResultadoDoSupabase);
-        // Atualiza a réplica local para bater exatamente com a nuvem quando online
+        // Atualiza a réplica local preservando dados existentes locais que possam não ter vindo do Supabase
         try {
-          localStorage.setItem('sst_resultados_avaliacao_sst', JSON.stringify(normData));
+          const rawLocal = localStorage.getItem('sst_resultados_avaliacao_sst');
+          let merged = normData;
+          if (rawLocal) {
+            try {
+              const parsedLocal = JSON.parse(rawLocal);
+              if (Array.isArray(parsedLocal) && parsedLocal.length > 0) {
+                const map = new Map<string, any>();
+                parsedLocal.forEach(p => { if (p && p.id) map.set(p.id, p); });
+                normData.forEach(n => { if (n && n.id) map.set(n.id, n); });
+                merged = Array.from(map.values());
+              }
+            } catch (eParse) {
+              // Ignore
+            }
+          }
+          localStorage.setItem('sst_resultados_avaliacao_sst', JSON.stringify(merged));
+          return merged;
         } catch (e) {}
         return normData;
       }

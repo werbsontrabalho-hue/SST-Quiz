@@ -40,11 +40,71 @@ export function normalizeAlternativas(alternativas: any): string[] {
 
 export function normalizePergunta<T extends Record<string, any>>(pergunta: T): T {
   if (!pergunta) return pergunta;
-  const rawAlts = pergunta.alternativas || pergunta.opcoes;
+  const rawAlts = (pergunta as any).alternativas || (pergunta as any).opcoes;
   const alts = normalizeAlternativas(rawAlts);
-  return {
-    ...pergunta,
+  const { opcoes: _discardedOpcoes, ...rest } = pergunta as any;
+  const normalized: any = {
+    ...rest,
     alternativas: alts,
-    opcoes: alts,
   };
+
+  // Define 'opcoes' como propriedade compatível não-enumerável para que
+  // leituras como `p.opcoes` continuem funcionando nos componentes legados,
+  // mas 'opcoes' NUNCA seja incluído em Object.keys(), {...p}, JSON.stringify
+  // ou em chamadas upsert para a tabela 'perguntas' do Supabase.
+  try {
+    Object.defineProperty(normalized, 'opcoes', {
+      get() {
+        return this.alternativas || alts;
+      },
+      set(val) {
+        this.alternativas = normalizeAlternativas(val);
+      },
+      enumerable: false,
+      configurable: true,
+    });
+  } catch {
+    // Fallback silencioso se objeto não permitir definição
+  }
+
+  return normalized as T;
 }
+
+/**
+ * Prepara o objeto de pergunta para inserção ou atualização no banco de dados Supabase.
+ * Remove propriedades exclusivas do cliente (como 'opcoes') e garante que os campos
+ * correspondam estritamente ao schema da tabela public.perguntas.
+ */
+export function sanitizePerguntaParaDb(
+  p: any,
+  validEmpresaIds?: Set<string>,
+  fallbackEmpresaId?: string
+): Record<string, any> {
+  if (!p) return p;
+  const alternativas = normalizeAlternativas(p.alternativas || p.opcoes);
+  const empresaId =
+    validEmpresaIds && fallbackEmpresaId
+      ? validEmpresaIds.has(p.empresa_id)
+        ? p.empresa_id
+        : fallbackEmpresaId
+      : p.empresa_id;
+
+  const sanitized: Record<string, any> = {
+    id: p.id,
+    empresa_id: empresaId,
+    categoria: p.categoria,
+    tipo: p.tipo || 'multipla_escolha',
+    dificuldade: p.dificuldade || 'Médio',
+    enunciado: p.enunciado || '',
+    alternativas: alternativas,
+    resposta_correta: typeof p.resposta_correta === 'number' ? p.resposta_correta : 0,
+    explicacao: p.explicacao || '',
+    tempo_limite_segundos: typeof p.tempo_limite_segundos === 'number' ? p.tempo_limite_segundos : 30,
+    norma_relacionada: p.norma_relacionada || null,
+    disponivel_desafios: p.disponivel_desafios !== false,
+    ativa: p.ativa !== false,
+  };
+
+  return sanitized;
+}
+

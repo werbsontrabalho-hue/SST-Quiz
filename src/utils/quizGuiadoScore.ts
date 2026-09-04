@@ -23,10 +23,15 @@ export function calcularPontosQuizGuiado(args: CalcularPontosQuizGuiadoArgs): nu
   if (pontosServer !== undefined && pontosServer !== null) return pontosServer;
 
   // Modo competitivo: quanto mais rápido respondeu, mais pontos ganha.
+  // No avanço manual (0s), concede a pontuação base cheia de 1000 pontos.
   if (estilo === 'competitivo') {
-    const tempoMaxMs = (tempoPorPerguntaSeg || 30) * 1000;
-    const tempoRestanteRatio = Math.max(0, (tempoMaxMs - tempoMs) / tempoMaxMs);
-    return 1000 + Math.round(tempoRestanteRatio * 500);
+    const tempoSeg = tempoPorPerguntaSeg !== undefined ? Number(tempoPorPerguntaSeg) : 30;
+    if (tempoSeg > 0) {
+      const tempoMaxMs = tempoSeg * 1000;
+      const tempoRestanteRatio = Math.max(0, (tempoMaxMs - tempoMs) / tempoMaxMs);
+      return 1000 + Math.round(tempoRestanteRatio * 500);
+    }
+    return 1000;
   }
 
   // Modo educacional/interativo: valor fixo por acerto.

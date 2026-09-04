@@ -56,6 +56,11 @@ export const QuizPlayerView: React.FC<QuizPlayerViewProps> = ({ quizId, onVoltar
   const [pontosTotaisQuiz, setPontosTotaisQuiz] = useState(0);
   const [quizFinalizado, setQuizFinalizado] = useState(false);
   const quizFinalizadoRef = useRef(false); // Ref de guarda contra duplo envio
+  const opcaoSelecionadaRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    opcaoSelecionadaRef.current = opcaoSelecionada;
+  }, [opcaoSelecionada]);
 
   // Encontra o quiz ativo: prioriza o quizId recebido, depois o primeiro quiz
   // pendente do colaborador e, por fim, qualquer quiz já associado a ele.
@@ -142,13 +147,13 @@ export const QuizPlayerView: React.FC<QuizPlayerViewProps> = ({ quizId, onVoltar
       setTempoRestanteSeg(prev => Math.max(0, prev - 1));
     }, 1000);
 
-    // Timeout separado: o callback de confirmação roda FORA do updater de estado,
-    // evitando problemas de closure/estado obsoleto
+    // Timeout separado: se o tempo esgotar, confirma com a opção selecionada pelo usuário
+    // (se houver) para evitar perda de pontos por leitura longa do enunciado
     const autoTimeout = setTimeout(() => {
       if (expired) return;
       expired = true;
       clearInterval(timer);
-      confirmarRespostaAutomaticamente(null, tempoLimite);
+      confirmarRespostaAutomaticamente(opcaoSelecionadaRef.current, tempoLimite);
     }, tempoLimite * 1000);
 
     return () => {
@@ -286,6 +291,17 @@ export const QuizPlayerView: React.FC<QuizPlayerViewProps> = ({ quizId, onVoltar
     confirmarRespostaAutomaticamente(opcaoSelecionada, tempoGastoPergunta);
   };
 
+  // Handler de clique na alternativa: primeiro toque seleciona;
+  // se o usuário clicar novamente na mesma alternativa já selecionada (duplo toque), confirma na hora!
+  const handleSelecionarAlternativa = (idx: number) => {
+    if (respostaConfirmada) return;
+    if (opcaoSelecionada === idx) {
+      confirmarRespostaAutomaticamente(idx, tempoGastoPergunta);
+      return;
+    }
+    setOpcaoSelecionada(idx);
+  };
+
   // Handler "Próxima Pergunta": avança para a próxima pergunta ou, na última,
   // finaliza o quiz (envia o resultado ao contexto, limpa a sessão salva e
   // dispara os confetes de comemoração).
@@ -419,51 +435,53 @@ export const QuizPlayerView: React.FC<QuizPlayerViewProps> = ({ quizId, onVoltar
         </div>
       ) : (
         /* Cartão da Pergunta Ativa */
-        <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl text-white shadow-2xl overflow-hidden">
+        <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl text-white shadow-2xl relative">
           
-          {/* Cabeçalho com categoria, norma, dificuldade e barra de progresso */}
-          <div className="p-5 border-b border-white/10 bg-white/5 backdrop-blur-md flex items-center justify-between flex-wrap gap-3">
-            <div>
-              <div className="flex items-center space-x-2">
-                <span className="text-xs font-bold text-emerald-400 bg-emerald-500/10 px-2.5 py-0.5 rounded-full border border-emerald-500/30">
-                  {perguntaAtual.categoria}
-                </span>
-                {perguntaAtual.norma_relacionada && (
-                  <span className="text-xs font-semibold text-blue-400 bg-blue-500/10 px-2.5 py-0.5 rounded-full border border-blue-500/30">
-                    {perguntaAtual.norma_relacionada}
+          {/* Cabeçalho sticky: categoria, pergunta X de Y e cronômetro sempre visíveis no celular */}
+          <div className="sticky top-0 z-20 backdrop-blur-xl bg-slate-900/95 border-b border-white/10 rounded-t-2xl">
+            <div className="p-4 sm:p-5 flex items-center justify-between flex-wrap gap-2.5">
+              <div>
+                <div className="flex items-center space-x-2 flex-wrap gap-y-1">
+                  <span className="text-[11px] font-bold text-emerald-400 bg-emerald-500/10 px-2.5 py-0.5 rounded-full border border-emerald-500/30">
+                    {perguntaAtual.categoria}
                   </span>
-                )}
-                <span className="text-xs text-slate-400 font-medium">
-                  • Dificuldade {perguntaAtual.dificuldade}
+                  {perguntaAtual.norma_relacionada && (
+                    <span className="text-[11px] font-semibold text-blue-400 bg-blue-500/10 px-2.5 py-0.5 rounded-full border border-blue-500/30">
+                      {perguntaAtual.norma_relacionada}
+                    </span>
+                  )}
+                  <span className="text-[11px] text-slate-400 font-medium">
+                    • Dificuldade {perguntaAtual.dificuldade}
+                  </span>
+                </div>
+                <h2 className="text-xs sm:text-sm font-bold text-slate-300 mt-1">
+                  Pergunta {indicePerguntaAtual + 1} de {totalPerguntas}
+                </h2>
+              </div>
+
+              {/* Exibição do cronômetro regressivo */}
+              <div className="flex items-center space-x-2 bg-white/10 backdrop-blur-md px-3 py-1.5 rounded-xl border border-white/10 shrink-0">
+                <Clock className={`w-4 h-4 ${tempoRestanteSeg <= 10 ? 'text-rose-400 animate-ping' : 'text-slate-300'}`} />
+                <span className={`text-xs sm:text-sm font-black ${tempoRestanteSeg <= 10 ? 'text-rose-400' : 'text-slate-100'}`}>
+                  {tempoRestanteSeg}s
                 </span>
               </div>
-              <h2 className="text-sm font-bold text-slate-300 mt-1">
-                Pergunta {indicePerguntaAtual + 1} de {totalPerguntas}
-              </h2>
             </div>
 
-            {/* Exibição do cronômetro regressivo */}
-            <div className="flex items-center space-x-2 bg-white/10 backdrop-blur-md px-3 py-1.5 rounded-xl border border-white/10">
-              <Clock className={`w-4 h-4 ${tempoRestanteSeg <= 10 ? 'text-rose-400 animate-ping' : 'text-slate-300'}`} />
-              <span className={`text-sm font-black ${tempoRestanteSeg <= 10 ? 'text-rose-400' : 'text-slate-100'}`}>
-                {tempoRestanteSeg}s
-              </span>
+            {/* Barra visual de progresso do tempo */}
+            <div className="w-full bg-white/10 h-1.5 overflow-hidden">
+              <div 
+                className={`h-full transition-all duration-1000 ${
+                  pctTimer > 50 ? 'bg-emerald-500' : pctTimer > 25 ? 'bg-amber-500' : 'bg-rose-500'
+                }`}
+                style={{ width: `${pctTimer}%` }}
+              />
             </div>
           </div>
 
-          {/* Barra visual de progresso do tempo */}
-          <div className="w-full bg-white/10 h-1.5 overflow-hidden">
-            <div 
-              className={`h-full transition-all duration-1000 ${
-                pctTimer > 50 ? 'bg-emerald-500' : pctTimer > 25 ? 'bg-amber-500' : 'bg-rose-500'
-              }`}
-              style={{ width: `${pctTimer}%` }}
-            />
-          </div>
-
-          {/* Corpo: enunciado da pergunta */}
-          <div className="p-6 space-y-6">
-            <h3 className="text-lg font-extrabold text-white leading-relaxed">
+          {/* Corpo: enunciado da pergunta e alternativas */}
+          <div className="p-4 sm:p-6 space-y-5 sm:space-y-6">
+            <h3 className="text-sm sm:text-base md:text-lg font-extrabold text-white leading-relaxed break-words hyphens-auto">
               {perguntaAtual.enunciado}
             </h3>
 
@@ -484,29 +502,38 @@ export const QuizPlayerView: React.FC<QuizPlayerViewProps> = ({ quizId, onVoltar
                     styleClasse = 'bg-white/5 border-white/5 text-slate-500 opacity-40';
                   }
                 } else if (eSelecionada) {
-                  styleClasse = 'bg-emerald-500/20 border-emerald-500 text-emerald-300 font-semibold shadow-inner';
+                  styleClasse = 'bg-emerald-500/20 border-emerald-500 text-emerald-300 font-semibold shadow-inner ring-2 ring-emerald-400/50';
                 }
 
                 return (
                   <button
                     key={idx}
                     disabled={respostaConfirmada}
-                    onClick={() => setOpcaoSelecionada(idx)}
-                    className={`w-full text-left p-4 rounded-xl border text-sm transition-all flex items-center justify-between gap-3 ${styleClasse}`}
+                    onClick={() => handleSelecionarAlternativa(idx)}
+                    className={`w-full text-left p-3.5 sm:p-4 rounded-xl border text-xs sm:text-sm transition-all flex items-start justify-between gap-3 touch-manipulation select-none active:scale-[0.99] cursor-pointer ${styleClasse}`}
                   >
-                    <div className="flex items-center space-x-3">
-                      <span className={`w-7 h-7 rounded-lg flex items-center justify-center font-bold text-xs shrink-0 ${
-                        respostaConfirmada && eCorreta ? 'bg-emerald-500 text-slate-950' :
-                        respostaConfirmada && eSelecionada && !eCorreta ? 'bg-rose-500 text-white' :
-                        eSelecionada ? 'bg-emerald-500/30 text-emerald-300' : 'bg-white/10 text-slate-300'
+                    <div className="flex items-start space-x-3 flex-1 min-w-0">
+                      <span className={`w-7 h-7 rounded-lg flex items-center justify-center font-bold text-xs shrink-0 mt-0.5 ${
+                        respostaConfirmada && eCorreta ? 'bg-emerald-500 text-slate-950 font-black' :
+                        respostaConfirmada && eSelecionada && !eCorreta ? 'bg-rose-500 text-white font-black' :
+                        eSelecionada ? 'bg-emerald-500 text-slate-950 font-black' : 'bg-white/10 text-slate-300'
                       }`}>
                         {String.fromCharCode(65 + idx)}
                       </span>
-                      <span>{formatAlternativaText(altText)}</span>
+                      <div className="flex-1 min-w-0">
+                        <span className="break-words hyphens-auto leading-relaxed block text-slate-100 font-medium">
+                          {formatAlternativaText(altText)}
+                        </span>
+                        {eSelecionada && !respostaConfirmada && (
+                          <span className="text-[10px] text-emerald-400 font-bold block mt-1">
+                            ✓ Selecionada (toque de novo para confirmar)
+                          </span>
+                        )}
+                      </div>
                     </div>
 
-                    {respostaConfirmada && eCorreta && <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />}
-                    {respostaConfirmada && eSelecionada && !eCorreta && <XCircle className="w-5 h-5 text-rose-400 shrink-0" />}
+                    {respostaConfirmada && eCorreta && <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />}
+                    {respostaConfirmada && eSelecionada && !eCorreta && <XCircle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />}
                   </button>
                 );
               })}
@@ -522,46 +549,54 @@ export const QuizPlayerView: React.FC<QuizPlayerViewProps> = ({ quizId, onVoltar
                 <div className="flex items-center space-x-2 font-extrabold text-sm">
                   {opcaoSelecionada === perguntaAtual.resposta_correta ? (
                     <>
-                      <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+                      <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
                       <span>
                         Resposta Correta! (+{respostasAnteriores[respostasAnteriores.length - 1]?.pontos_ganhos ?? (empresa?.configuracoes?.pontosPorAcertoQuiz ?? 10)} pts)
                       </span>
                     </>
                   ) : (
                     <>
-                      <XCircle className="w-5 h-5 text-rose-400" />
+                      <XCircle className="w-5 h-5 text-rose-400 shrink-0" />
                       <span>Incorreto! Veja a fundamentação abaixo:</span>
                     </>
                   )}
                 </div>
 
-                <p className="text-xs text-slate-300 leading-relaxed pt-1">
+                <p className="text-xs text-slate-300 leading-relaxed pt-1 break-words">
                   {perguntaAtual.explicacao}
                 </p>
               </div>
             )}
+          </div>
 
-            {/* Barra de ações: confirmar resposta ou avançar para a próxima pergunta */}
-            <div className="pt-4 border-t border-white/10 flex justify-end">
-              {!respostaConfirmada ? (
+          {/* Barra de ações sticky no rodapé: sempre acessível no celular sem precisar rolar */}
+          <div className="sticky bottom-0 z-20 backdrop-blur-xl bg-slate-900/95 border-t border-white/10 p-3 sm:p-4 rounded-b-2xl shadow-2xl flex items-center justify-between gap-3">
+            {!respostaConfirmada ? (
+              <>
+                <div className="text-xs text-slate-300 min-w-0 truncate">
+                  {opcaoSelecionada !== null ? (
+                    <span>Opção <strong>{String.fromCharCode(65 + opcaoSelecionada)}</strong> selecionada</span>
+                  ) : (
+                    <span className="text-slate-400">Selecione uma opção</span>
+                  )}
+                </div>
                 <button
                   disabled={opcaoSelecionada === null}
                   onClick={handleConfirmarResposta}
-                  className="bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-emerald-400 text-slate-950 font-black px-6 py-2.5 rounded-xl text-sm transition-all shadow-md"
+                  className="bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-emerald-400 text-slate-950 font-black px-5 sm:px-6 py-2.5 rounded-xl text-xs sm:text-sm transition-all shadow-md touch-manipulation active:scale-95 shrink-0"
                 >
                   Confirmar Resposta
                 </button>
-              ) : (
-                <button
-                  onClick={handleProximaPergunta}
-                  className="bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black px-6 py-2.5 rounded-xl text-sm transition-all shadow-md flex items-center space-x-2"
-                >
-                  <span>{indicePerguntaAtual + 1 < totalPerguntas ? 'Próxima Pergunta' : 'Ver Resultado do Quiz'}</span>
-                  <ArrowRight className="w-4 h-4" />
-                </button>
-              )}
-            </div>
-
+              </>
+            ) : (
+              <button
+                onClick={handleProximaPergunta}
+                className="w-full bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black px-6 py-3 rounded-xl text-xs sm:text-sm transition-all shadow-md flex items-center justify-center space-x-2 touch-manipulation active:scale-95"
+              >
+                <span>{indicePerguntaAtual + 1 < totalPerguntas ? 'Próxima Pergunta' : 'Ver Resultado do Quiz'}</span>
+                <ArrowRight className="w-4 h-4" />
+              </button>
+            )}
           </div>
 
         </div>

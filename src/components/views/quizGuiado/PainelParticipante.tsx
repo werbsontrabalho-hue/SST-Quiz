@@ -95,10 +95,23 @@ export const PainelParticipante: React.FC<PainelParticipanteProps> = ({
          (p.nome && nomeIdentificacao && (p.nome || '').trim().toLowerCase() === (nomeIdentificacao || '').trim().toLowerCase())
   );
 
-  const tempoLimiteSeg = sala.tempo_por_pergunta_seg ?? sala.tempo_por_pergunta ?? 30;
+  const tempoLimiteSeg = sala.tempo_por_pergunta_seg !== undefined
+    ? Number(sala.tempo_por_pergunta_seg)
+    : (sala.tempo_por_pergunta !== undefined ? Number(sala.tempo_por_pergunta) : 30);
   const [opcaoSelecionada, setOpcaoSelecionada] = useState<number | null>(null);
   const [respostaConfirmada, setRespostaConfirmada] = useState<boolean>(false);
   const [tempoRestante, setTempoRestante] = useState<number>(tempoLimiteSeg);
+
+  const opcaoSelecionadaRef = useRef<number | null>(null);
+  const respostaConfirmadaRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    opcaoSelecionadaRef.current = opcaoSelecionada;
+  }, [opcaoSelecionada]);
+
+  useEffect(() => {
+    respostaConfirmadaRef.current = respostaConfirmada;
+  }, [respostaConfirmada]);
 
   // Pergunta atual da sala
   const perguntaAtual = perguntas[sala.pergunta_atual_index];
@@ -148,8 +161,18 @@ export const PainelParticipante: React.FC<PainelParticipanteProps> = ({
       const endsAt = sala.question_ends_at || (startedAt + tempoLimiteSeg * 1000);
 
       const remSecs = Math.max(0, Math.ceil((endsAt - now) / 1000));
-      setTempoRestante(remSecs);
-    }, 100);
+      setTempoRestante(prev => (prev !== remSecs ? remSecs : prev));
+
+      // Se o tempo zerar e o aluno tiver deixado uma opção selecionada sem confirmar, auto-submete
+      if (remSecs === 0 && opcaoSelecionadaRef.current !== null && !respostaConfirmadaRef.current) {
+        if (perguntaAtual && participante) {
+          const opt = opcaoSelecionadaRef.current;
+          setRespostaConfirmada(true);
+          const tempoGasto = tempoLimiteSeg > 0 ? (tempoLimiteSeg * 1000) : 10000;
+          submeterRespostaQuizGuiado(sala.id, participante.id, perguntaAtual.id, opt, tempoGasto);
+        }
+      }
+    }, 250);
 
     return () => clearInterval(interval);
   }, [sala.status, sala.question_started_at, sala.question_ends_at, tempoLimiteSeg, sala.pergunta_atual_index]);
@@ -192,16 +215,28 @@ export const PainelParticipante: React.FC<PainelParticipanteProps> = ({
     }
   };
 
-  // Função para submeter opção selecionada
-  const handleSelecionarOpcao = (opcaoIdx: number) => {
-    if (respostaConfirmada || sala.status !== 'em_andamento' || !perguntaAtual || !participante) return;
+  // Função para submeter opção selecionada de forma definitiva
+  const submeterOpcaoEfetiva = (opcaoIdx: number) => {
+    if (respostaConfirmadaRef.current || sala.status !== 'em_andamento' || !perguntaAtual || !participante) return;
 
     setOpcaoSelecionada(opcaoIdx);
     setRespostaConfirmada(true);
 
     const tempoGasto = tempoLimiteSeg > 0 ? ((tempoLimiteSeg - tempoRestante) * 1000) : 10000;
-
     submeterRespostaQuizGuiado(sala.id, participante.id, perguntaAtual.id, opcaoIdx, tempoGasto);
+  };
+
+  // Clique na alternativa: primeiro clique seleciona sem bloquear o scroll nem a tela;
+  // segundo clique na mesma alternativa (ou confirmação pelo botão no rodapé) confirma e envia!
+  const handleSelecionarOpcao = (opcaoIdx: number) => {
+    if (respostaConfirmada || sala.status !== 'em_andamento' || !perguntaAtual || !participante || (tempoLimiteSeg > 0 && tempoRestante === 0)) return;
+
+    if (opcaoSelecionada === opcaoIdx) {
+      submeterOpcaoEfetiva(opcaoIdx);
+      return;
+    }
+
+    setOpcaoSelecionada(opcaoIdx);
   };
 
   // Ranking ordenado da sala
@@ -399,85 +434,134 @@ export const PainelParticipante: React.FC<PainelParticipanteProps> = ({
           PASSO 4 & 5: PERGUNTA ATIVA E SELEÇÃO DE RESPOSTA
       ------------------------------------------------------------- */}
       {sala.status === 'em_andamento' && perguntaAtual && !sala.revelar_resposta_atual && (
-        <div className="bg-slate-900/90 border border-white/15 rounded-3xl p-6 text-white shadow-2xl backdrop-blur-xl space-y-6">
+        <div className="bg-slate-900/90 border border-white/15 rounded-3xl text-white shadow-2xl backdrop-blur-xl relative">
           
-          {/* Indicador de progresso e timer */}
-          <div className="flex items-center justify-between border-b border-white/10 pb-3">
-            <span className="text-xs font-black text-amber-400 uppercase tracking-wider">
-              Pergunta {sala.pergunta_atual_index + 1} de {totalPerguntas}
-            </span>
+          {/* Cabeçalho Sticky: Pergunta X de Y e Timer sempre visíveis ao rolar no celular */}
+          <div className="sticky top-0 z-20 backdrop-blur-xl bg-slate-900/95 border-b border-white/15 rounded-t-3xl p-4 sm:p-5">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-black text-amber-400 uppercase tracking-wider">
+                Pergunta {sala.pergunta_atual_index + 1} de {totalPerguntas}
+              </span>
 
+              {tempoLimiteSeg > 0 ? (
+                <div className={`text-xs font-black px-3 py-1 rounded-xl border flex items-center space-x-1 shrink-0 ${
+                  tempoRestante <= 5 ? 'bg-rose-500/20 text-rose-300 border-rose-500/50 animate-pulse' : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                }`}>
+                  <Clock className="w-3.5 h-3.5" />
+                  <span>⏱️ {tempoRestante}s</span>
+                </div>
+              ) : (
+                <div className="text-[11px] font-bold px-2.5 py-1 rounded-xl border border-indigo-500/40 bg-indigo-500/10 text-indigo-300 flex items-center space-x-1 shrink-0">
+                  <Clock className="w-3 h-3 text-indigo-400" />
+                  <span>Avanço Manual</span>
+                </div>
+              )}
+            </div>
+
+            {/* Barra visual de progresso do timer */}
             {tempoLimiteSeg > 0 && (
-              <div className={`text-xs font-black px-3 py-1 rounded-xl border flex items-center space-x-1 ${
-                tempoRestante <= 5 ? 'bg-rose-500/20 text-rose-300 border-rose-500/50 animate-pulse' : 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-              }`}>
-                <Clock className="w-3.5 h-3.5" />
-                <span>⏱️ {tempoRestante}s</span>
+              <div className="w-full bg-white/10 h-1.5 rounded-full overflow-hidden mt-3">
+                <div 
+                  className={`h-full transition-all duration-1000 ${
+                    tempoRestante > tempoLimiteSeg * 0.5 ? 'bg-emerald-500' : tempoRestante > tempoLimiteSeg * 0.25 ? 'bg-amber-500' : 'bg-rose-500'
+                  }`}
+                  style={{ width: `${Math.min(100, (tempoRestante / tempoLimiteSeg) * 100)}%` }}
+                />
               </div>
             )}
           </div>
 
-          {/* Enunciado */}
-          <h2 className="text-base sm:text-lg font-black text-white leading-relaxed">
-            {perguntaAtual.enunciado}
-          </h2>
+          {/* Enunciado e Alternativas */}
+          <div className="p-4 sm:p-6 space-y-5 sm:space-y-6">
+            <h2 className="text-sm sm:text-base md:text-lg font-black text-white leading-relaxed break-words hyphens-auto">
+              {perguntaAtual.enunciado}
+            </h2>
 
-          {/* Alternativas de Resposta (A, B, C, D) */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            {opcoesPerguntaAtual.map((opcao, idx) => {
-              const cores = [
-                'from-rose-600 to-rose-700 hover:from-rose-500 hover:to-rose-600 text-white border-rose-400/40',
-                'from-blue-600 to-blue-700 hover:from-blue-500 hover:to-blue-600 text-white border-blue-400/40',
-                'from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 border-amber-300/40',
-                'from-emerald-600 to-emerald-700 hover:from-emerald-500 hover:to-emerald-600 text-white border-emerald-400/40'
-              ];
+            {/* Alternativas de Resposta (A, B, C, D) */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {opcoesPerguntaAtual.map((opcao, idx) => {
+                const cores = [
+                  'from-rose-600 to-rose-700 hover:from-rose-500 hover:to-rose-600 text-white border-rose-400/40',
+                  'from-blue-600 to-blue-700 hover:from-blue-500 hover:to-blue-600 text-white border-blue-400/40',
+                  'from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 border-amber-300/40',
+                  'from-emerald-600 to-emerald-700 hover:from-emerald-500 hover:to-emerald-600 text-white border-emerald-400/40'
+                ];
 
-              const letras = ['A', 'B', 'C', 'D'];
-              const selecionado = opcaoSelecionada === idx;
+                const letras = ['A', 'B', 'C', 'D'];
+                const selecionado = opcaoSelecionada === idx;
 
-              return (
-                <button
-                  key={idx}
-                  disabled={respostaConfirmada || tempoRestante === 0}
-                  onClick={() => handleSelecionarOpcao(idx)}
-                  className={`p-4 rounded-2xl border text-left flex items-start space-x-3 transition-all transform active:scale-98 bg-gradient-to-br shadow-lg min-h-[56px] ${cores[idx]} ${
-                    selecionado ? 'ring-4 ring-white scale-102 font-extrabold' : ''
-                  } ${respostaConfirmada && !selecionado ? 'opacity-30' : ''}`}
-                >
-                  <span className="w-7 h-7 rounded-xl bg-slate-950/40 font-black text-sm flex items-center justify-center shrink-0 border border-white/20">
-                    {letras[idx]}
-                  </span>
-                  <span className="text-xs font-bold leading-tight pt-1">
-                    {formatAlternativaText(opcao)}
-                  </span>
-                </button>
-              );
-            })}
+                return (
+                  <button
+                    key={idx}
+                    disabled={respostaConfirmada || tempoRestante === 0}
+                    onClick={() => handleSelecionarOpcao(idx)}
+                    className={`p-3.5 sm:p-4 rounded-2xl border text-left flex items-start space-x-3 transition-all transform active:scale-[0.98] bg-gradient-to-br shadow-lg min-h-[52px] touch-manipulation select-none cursor-pointer ${cores[idx]} ${
+                      selecionado ? 'ring-4 ring-white scale-[1.01] font-extrabold shadow-2xl' : ''
+                    } ${respostaConfirmada && !selecionado ? 'opacity-30' : ''}`}
+                  >
+                    <span className="w-7 h-7 rounded-xl bg-slate-950/40 font-black text-sm flex items-center justify-center shrink-0 border border-white/20 mt-0.5">
+                      {letras[idx]}
+                    </span>
+                    <div className="flex-1 min-w-0">
+                      <span className="text-xs sm:text-sm font-bold leading-snug block break-words hyphens-auto">
+                        {formatAlternativaText(opcao)}
+                      </span>
+                      {selecionado && !respostaConfirmada && (
+                        <span className="text-[10px] font-extrabold block mt-1.5 opacity-95">
+                          ✓ Toque novamente para confirmar
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* PASSO 5: FEEDBACK APÓS SELEÇÃO */}
+            {respostaConfirmada && (
+              <div className="p-4 bg-emerald-500/20 border border-emerald-500/40 rounded-2xl text-emerald-300 text-xs font-bold space-y-1 animate-fadeIn">
+                <div className="flex items-center space-x-2 text-sm font-extrabold text-emerald-400">
+                  <CheckCircle2 className="w-5 h-5 shrink-0" />
+                  <span>Resposta registrada com sucesso!</span>
+                </div>
+                <p className="text-emerald-200">
+                  ✅ Sua resposta foi enviada. Aguarde o encerramento da pergunta pelo instrutor.
+                </p>
+              </div>
+            )}
+
+            {/* PASSO 6: CASO O CRONÔMETRO CHEGUE A ZERO SEM MENSAGEM */}
+            {tempoRestante === 0 && !respostaConfirmada && (
+              <div className="p-4 bg-amber-500/20 border border-amber-500/40 rounded-2xl text-amber-300 text-xs font-bold space-y-1 animate-fadeIn">
+                <div className="flex items-center space-x-2 text-sm font-extrabold text-amber-400">
+                  <Clock className="w-5 h-5 shrink-0" />
+                  <span>Tempo encerrado!</span>
+                </div>
+                <p className="text-amber-200">
+                  Você não respondeu esta pergunta a tempo. Aguarde o resultado do instrutor.
+                </p>
+              </div>
+            )}
           </div>
 
-          {/* PASSO 5: FEEDBACK APÓS SELEÇÃO */}
-          {respostaConfirmada && (
-            <div className="p-4 bg-emerald-500/20 border border-emerald-500/40 rounded-2xl text-emerald-300 text-xs font-bold space-y-1 animate-fadeIn">
-              <div className="flex items-center space-x-2 text-sm font-extrabold text-emerald-400">
-                <CheckCircle2 className="w-5 h-5 shrink-0" />
-                <span>Resposta registrada!</span>
+          {/* Barra de ação sticky no rodapé para confirmação no celular */}
+          {!respostaConfirmada && tempoRestante > 0 && opcaoSelecionada !== null && (
+            <div className="sticky bottom-3 z-30 m-3 sm:m-4 p-3 sm:p-4 bg-slate-950/95 border-2 border-emerald-500/80 rounded-2xl shadow-2xl backdrop-blur-xl flex items-center justify-between gap-3 animate-fadeIn">
+              <div className="min-w-0 flex-1">
+                <span className="text-[10px] sm:text-xs text-slate-400 block font-semibold uppercase tracking-wider">
+                  Opção selecionada:
+                </span>
+                <span className="font-extrabold text-white text-xs sm:text-sm truncate block">
+                  {['A', 'B', 'C', 'D'][opcaoSelecionada]}) {formatAlternativaText(opcoesPerguntaAtual[opcaoSelecionada])}
+                </span>
               </div>
-              <p className="text-emerald-200">
-                ✅ Sua resposta foi enviada. Aguarde o encerramento da pergunta.
-              </p>
-            </div>
-          )}
-
-          {/* PASSO 6: CASO O CRONÔMETRO CHEGUE A ZERO SEM MENSAGEM */}
-          {tempoRestante === 0 && !respostaConfirmada && (
-            <div className="p-4 bg-amber-500/20 border border-amber-500/40 rounded-2xl text-amber-300 text-xs font-bold space-y-1 animate-fadeIn">
-              <div className="flex items-center space-x-2 text-sm font-extrabold text-amber-400">
-                <Clock className="w-5 h-5 shrink-0" />
-                <span>Tempo encerrado!</span>
-              </div>
-              <p className="text-amber-200">
-                Você não respondeu esta pergunta. Aguarde o resultado do professor.
-              </p>
+              <button
+                onClick={() => submeterOpcaoEfetiva(opcaoSelecionada)}
+                className="bg-emerald-500 hover:bg-emerald-400 active:scale-95 text-slate-950 font-black px-4 sm:px-6 py-2.5 sm:py-3 rounded-xl text-xs sm:text-sm transition-all shadow-lg flex items-center space-x-1.5 shrink-0 touch-manipulation cursor-pointer"
+              >
+                <span>Confirmar</span>
+                <CheckCircle2 className="w-4 h-4" />
+              </button>
             </div>
           )}
 
