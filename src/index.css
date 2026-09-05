@@ -1,0 +1,31 @@
+@import "tailwindcss";
+
+/* ==========================================================================
+   Capacitor — safe-area + base mobile (não altera o visual na Web desktop)
+   - notch/barra de status: env(safe-area-inset-*)
+   - teclado/inputs iOS: font-size >= 16px evita zoom automático
+   ========================================================================== */
+:root {
+  --sat: env(safe-area-inset-top, 0px);
+  --sab: env(safe-area-inset-bottom, 0px);
+  --sal: env(safe-area-inset-left, 0px);
+  --sar: env(safe-area-inset-right, 0px);
+}
+
+html, body {
+  overscroll-behavior-y: none;
+}
+
+body {
+  padding-top: var(--sat);
+  padding-left: var(--sal);
+  padding-right: var(--sar);
+  /* barra de gestos do iPhone/Android: reserva espaço sem quebrar a Web */
+  padding-bottom: var(--sab);
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
+}
+
+input, select, textarea {
+  font-size: 16px; /* evita zoom automático do iOS ao focar campos */
+}

@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1017897384431",
+    "project_id": "sst-quiz",
+    "storage_bucket": "sst-quiz.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1017897384431:android:b08265db8fe45c2d321e1a",
+        "android_client_info": {
+          "package_name": "br.com.sstquiz.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyARkoKQuni4uhWiqlP3icIkqD1dQEwTGic"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -1,0 +1,6 @@
+{
+  "name": "SST Quiz",
+  "description": "Plataforma SaaS completa para treinamentos, quizzes, engajamento gamificado e desafios 1x1 em Saúde e Segurança do Trabalho com suporte Offline First.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,13 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+
+# Dados de runtime / gerados no servidor (não versionar)
+backups/
+public/pdf/
+supabase/.temp/
