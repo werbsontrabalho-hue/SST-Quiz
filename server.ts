@@ -222,7 +222,27 @@ export async function createApp(): Promise<{ app: express.Express; state: AppBac
   app.post("/api/sync-offline", (req, res) => {
     try {
       const { id, type, payload, timestamp } = req.body || {};
-      console.log(`[SST Quiz] Sincronização offline recebida (${type}):`, id, timestamp);
+      if (!id || !type) {
+        res.status(400).json({ error: "id e type são obrigatórios" });
+        return;
+      }
+      // Persiste a fila em disco para não perder quando faltar internet (antes só registrava no log).
+      try {
+        const dir = path.join(process.cwd(), "backups");
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        const file = path.join(dir, "offline-queue.json");
+        let arr: any[] = [];
+        try {
+          if (fs.existsSync(file)) arr = JSON.parse(fs.readFileSync(file, "utf8") || "[]");
+        } catch { arr = []; }
+        if (!Array.isArray(arr)) arr = [];
+        if (!arr.some((x: any) => x && x.id === id)) {
+          arr.push({ id, type, payload, timestamp: timestamp || new Date().toISOString(), recebido_em: new Date().toISOString() });
+          fs.writeFileSync(file, JSON.stringify(arr.slice(-1000), null, 2));
+        }
+      } catch (e) {
+        console.warn("[SST Quiz] Falha ao persistir fila offline:", e);
+      }
       res.json({ success: true, id, syncedAt: new Date().toISOString() });
     } catch (e: any) {
       res.status(500).json({ error: e?.message || "Erro ao processar sincronização offline" });
@@ -371,7 +391,31 @@ export async function createApp(): Promise<{ app: express.Express; state: AppBac
         salaFinal.tempo_por_pergunta_seg = existente.tempo_por_pergunta_seg;
       } else {
         // Atualização do instrutor: aceita novas configurações (perguntas, tempo, notas, etc.)
-        salaFinal.perguntas = Array.isArray(sala.perguntas) && sala.perguntas.length > 0 ? sala.perguntas : existente.perguntas;
+        // AUD-25: NUNCA aceita gabarito vazio por cima do oficial. Se o payload
+        // trouxer perguntas SEM resposta_correta/explicacao (cópia sanitizada
+        // devolvida por participante sem __participantUpdate), mescla com o
+        // gabarito oficial existente por id.
+        if (Array.isArray(sala.perguntas) && sala.perguntas.length > 0) {
+          const oficialById = new Map<string, any>();
+          (Array.isArray(existente.perguntas) ? existente.perguntas : []).forEach((p: any) => {
+            if (p && p.id) oficialById.set(String(p.id), p);
+          });
+          salaFinal.perguntas = sala.perguntas.map((p: any) => {
+            if (!p || !p.id) return p;
+            const oficial = oficialById.get(String(p.id));
+            if (!oficial) return p;
+            const merged: any = { ...p };
+            if (merged.resposta_correta === undefined && oficial.resposta_correta !== undefined) {
+              merged.resposta_correta = oficial.resposta_correta;
+            }
+            if ((merged.explicacao === undefined || merged.explicacao === '') && oficial.explicacao !== undefined) {
+              merged.explicacao = oficial.explicacao;
+            }
+            return merged;
+          });
+        } else {
+          salaFinal.perguntas = existente.perguntas;
+        }
         salaFinal.empresa_id = sala.empresa_id || existente.empresa_id;
         salaFinal.instrutor_id = sala.instrutor_id || existente.instrutor_id;
         salaFinal.instrutor_nome = sala.instrutor_nome || existente.instrutor_nome;
@@ -500,7 +544,8 @@ export async function createApp(): Promise<{ app: express.Express; state: AppBac
       }
     }
     salasQuizMap.set(sala.id, salaFinal);
-    res.json({ success: true, sala: salaFinal });
+    // Segurança: a RESPOSTA nunca expõe o gabarito (sanitizada).
+    res.json({ success: true, sala: sanitizeSalaParaParticipante(salaFinal) });
   });
 
   // Valida a resposta de um participante no SERVIDOR (Express), que possui o
@@ -522,10 +567,29 @@ export async function createApp(): Promise<{ app: express.Express; state: AppBac
       res.status(404).json({ success: false, message: "Sala não encontrada." });
       return;
     }
+    // Segurança: só aceita resposta com sala aberta (aguardando ou em andamento).
+    if (sala.status === 'concluido' || sala.status === 'encerrado' || sala.status === 'finalizada' || sala.status === 'cancelada') {
+      res.status(409).json({ success: false, message: "Sala já encerrada.", code: "SALA_FECHADA" });
+      return;
+    }
+    // Segurança: respeita a janela de tempo da pergunta (com 2s de tolerância de rede).
+    if (sala.question_ends_at) {
+      const agora = Date.now();
+      if (agora > Number(sala.question_ends_at) + 2000) {
+        res.status(409).json({ success: false, message: "Tempo esgotado.", code: "TEMPO_ESGOTADO" });
+        return;
+      }
+    }
     const perguntas = Array.isArray(sala.perguntas) ? sala.perguntas : [];
     const pergunta = perguntas.find((p: any) => String(p.id) === String(pergunta_id));
     if (!pergunta) {
       res.status(404).json({ success: false, message: "Pergunta não pertence à sala." });
+      return;
+    }
+    // Segurança: índice dentro das alternativas.
+    const totalAlt = Array.isArray(pergunta.alternativas) ? pergunta.alternativas.length : 0;
+    if (!Number.isInteger(Number(resposta_index)) || Number(resposta_index) < 0 || (totalAlt > 0 && Number(resposta_index) >= totalAlt)) {
+      res.status(400).json({ success: false, message: "Alternativa inválida." });
       return;
     }
     const corretaIndex = Number(pergunta.resposta_correta);
@@ -625,11 +689,12 @@ export async function createApp(): Promise<{ app: express.Express; state: AppBac
 
     if (idx < 0) {
       // Participante não encontrado (visitante LAN / nova sessão): registra.
+      // Segurança: ignora pontuação enviada pelo cliente, usa só o cálculo do servidor.
       const novoPart = {
         id: participante_id,
         nome: participante_nome || 'Participante',
-        respostas: respostas || {},
-        pontuacao_acumulada: pontuacao_acumulada || 0,
+        respostas: respostas && typeof respostas === 'object' ? { ...respostas } : {},
+        pontuacao_acumulada: 0,
       };
       if (pergunta_id && !novoPart.respostas[pergunta_id]) {
         novoPart.respostas[pergunta_id] = {
@@ -657,7 +722,10 @@ export async function createApp(): Promise<{ app: express.Express; state: AppBac
         };
       }
       p.respostas = respostasAtuais;
-      p.pontuacao_acumulada = Number(pontuacao_acumulada ?? p.pontuacao_acumulada ?? 0);
+      // Segurança: nunca confia na pontuação do cliente (anti-inflar pontos).
+      // Soma apenas os pontos calculados no servidor quando for resposta nova e correta.
+      const baseAtual = Number(p.pontuacao_acumulada ?? 0) || 0;
+      p.pontuacao_acumulada = baseAtual;
       if (pergunta_id && correta === true) {
         p.pontuacao_acumulada = (Number(p.pontuacao_acumulada) || 0) + pontosAdicionais;
       }
@@ -875,8 +943,16 @@ export async function createApp(): Promise<{ app: express.Express; state: AppBac
   }, async (req, res) => {
     try {
       const { email, nome, resultado, pdfBase64 } = req.body;
-      if (!email || !email.includes("@")) {
+      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(String(email).trim())) {
         res.status(400).json({ error: "E-mail de destino inválido." });
+        return;
+      }
+      if (!resultado || typeof resultado !== 'object') {
+        res.status(400).json({ error: "Resultado da avaliação ausente." });
+        return;
+      }
+      if (pdfBase64 && String(pdfBase64).length > 15 * 1024 * 1024) {
+        res.status(413).json({ error: "PDF muito grande (máx 15MB)." });
         return;
       }
 

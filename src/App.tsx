@@ -53,6 +53,21 @@ function AppContent() {
   const [activeQuizId, setActiveQuizId] = useState<string | undefined>(undefined);
   const [activeDesafioId, setActiveDesafioId] = useState<string | undefined>(undefined);
 
+  // Janela bonita de aviso no padrão do app (substitui o alert branco feio do navegador).
+  // Todo alert() do sistema cai aqui automaticamente.
+  const [avisosApp, setAvisosApp] = useState<string[]>([]);
+  useEffect(() => {
+    const mostrarAvisoBonito = (msg: any) => {
+      const texto = String(msg ?? '').trim() || 'Atenção.';
+      setAvisosApp(prev => [...prev, texto]);
+    };
+    try {
+      (window as any).alert = mostrarAvisoBonito;
+    } catch { /* mantém o original */ }
+  }, []);
+  const fecharAvisoApp = () => setAvisosApp(prev => prev.slice(1));
+  const avisoAtual = avisosApp[0];
+
   // Inicializa o motor de sincronização offline e ouvinte de rede
   useEffect(() => {
     const cleanup = initOfflineSyncEngine();
@@ -298,6 +313,28 @@ function AppContent() {
         isOpen={showSupabaseModal}
         onClose={() => setShowSupabaseModal(false)}
       />
+
+      {/* Aviso bonito no padrão do app (troca o alert branco do navegador) */}
+      {avisoAtual && (
+        <div className="fixed inset-0 z-[100] bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-white/20 rounded-3xl p-6 max-w-md w-full space-y-4 shadow-2xl text-white">
+            <div className="flex items-center space-x-3 text-amber-400">
+              <div className="w-9 h-9 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-lg font-black">!</div>
+              <h3 className="text-lg font-black">Aviso do SST Quiz</h3>
+            </div>
+            <p className="text-xs text-slate-300 leading-relaxed whitespace-pre-wrap">{avisoAtual}</p>
+            <div className="flex items-center justify-end pt-2">
+              <button
+                onClick={fecharAvisoApp}
+                className="px-6 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 rounded-xl text-xs font-black shadow-lg"
+                autoFocus
+              >
+                Entendi
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -554,12 +554,12 @@ export const ProvaAvaliacaoPDFModal: React.FC<ProvaAvaliacaoPDFModalProps> = ({
     if (modoInicial === 'imprimir') {
       const timer = setTimeout(() => {
         executarImpressaoNativa();
-      }, 350);
+      }, 1200);
       return () => clearTimeout(timer);
     } else if (modoInicial === 'baixar_pdf') {
       const timer = setTimeout(() => {
         handleBaixarPdfDireto();
-      }, 350);
+      }, 1200);
       return () => clearTimeout(timer);
     }
   }, [isOpen, resultado, modoInicial]);

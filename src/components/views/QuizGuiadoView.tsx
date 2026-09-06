@@ -498,7 +498,7 @@ export const QuizGuiadoView: React.FC = () => {
                   <Sparkles className="w-8 h-8 text-slate-600 mx-auto" />
                   <p>Você ainda não criou nenhuma sala de quiz guiado.</p>
                   <button
-                    onClick={() => setShowCriarModal(true)}
+                    onClick={() => { setSalaParaEditar(null); setShowCriarModal(true); }}
                     className="text-amber-400 hover:text-amber-300 font-bold underline"
                   >
                     Clique aqui para criar sua primeira sala!

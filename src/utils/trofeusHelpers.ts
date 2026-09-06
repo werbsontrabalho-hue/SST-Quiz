@@ -120,7 +120,8 @@ export const valorRegraParaUsuario = (categoriaChave: string, regra: RegraTrofeu
     case 'vitoriasTotais':
       return modo === 'sequencial' ? (s.sequencia_vitorias || 0) : (s.desafios_vencidos || 0);
     case 'winStreak':
-      return modo === 'sequencial' ? (s.streak_dias || 0) : (s.maior_sequencia_vitorias || s.streak_dias || 0);
+      // Alinhado à concessão (SSTContext): usa streak_dias atual nos dois modos.
+      return (s.streak_dias || 0);
     case 'acertosTotais':
       return modo === 'sequencial' ? (s.sequencia_acertos || 0) : (s.acertos_totais || 0);
     case 'veteranoSST':

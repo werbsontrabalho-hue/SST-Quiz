@@ -19,16 +19,19 @@ export function calcularPontosQuizGuiado(args: CalcularPontosQuizGuiadoArgs): nu
 
   if (!correta) return 0;
 
-  // Quando a validação veio do servidor, o valor calculado ali tem prioridade.
-  if (pontosServer !== undefined && pontosServer !== null) return pontosServer;
+  // Quando a validação veio do servidor, o valor calculado ali tem prioridade (com trava de segurança).
+  if (pontosServer !== undefined && pontosServer !== null) {
+    const v = Number(pontosServer);
+    if (Number.isFinite(v)) return Math.max(0, Math.min(1500, Math.round(v)));
+  }
 
-  // Modo competitivo: quanto mais rápido respondeu, mais pontos ganha.
-  // No avanço manual (0s), concede a pontuação base cheia de 1000 pontos.
+  // Modo competitivo: quanto mais rápido respondeu, mais pontos ganha (1000 base + até 500 de velocidade = máx 1500).
   if (estilo === 'competitivo') {
     const tempoSeg = tempoPorPerguntaSeg !== undefined ? Number(tempoPorPerguntaSeg) : 30;
-    if (tempoSeg > 0) {
+    if (Number.isFinite(tempoSeg) && tempoSeg > 0) {
       const tempoMaxMs = tempoSeg * 1000;
-      const tempoRestanteRatio = Math.max(0, (tempoMaxMs - tempoMs) / tempoMaxMs);
+      const tempoSeguro = Number.isFinite(Number(tempoMs)) ? Math.max(0, Number(tempoMs)) : tempoMaxMs;
+      const tempoRestanteRatio = Math.max(0, (tempoMaxMs - tempoSeguro) / tempoMaxMs);
       return 1000 + Math.round(tempoRestanteRatio * 500);
     }
     return 1000;

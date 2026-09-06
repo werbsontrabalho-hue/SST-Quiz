@@ -365,7 +365,7 @@ export const AdminManagementView: React.FC = () => {
       return;
     }
 
-    adicionarUsuario({
+    const criado = adicionarUsuario({
       nome: nomeUser.trim(),
       email: emailUser.trim(),
       senha: senhaUser.trim() || undefined,
@@ -376,6 +376,11 @@ export const AdminManagementView: React.FC = () => {
       is_instrutor: isInstrutorUser,
       avatar: avatarUser || PRESET_AVATARS[0].url,
     });
+
+    // Se o limite do plano bloqueou (retorna false), mantém o modal aberto.
+    if (criado === false) {
+      return;
+    }
 
     setShowNovoUsuarioModal(false);
     setNomeUser('');

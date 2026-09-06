@@ -41,18 +41,34 @@ const dentroPeriodo = (dataISO: string | undefined, filtro: FiltroRelatorio): bo
   if (!filtro.dataInicio && !filtro.dataFim) return true;
   const dt = new Date(dataISO).getTime();
   if (filtro.dataInicio && dt < new Date(filtro.dataInicio).getTime()) return false;
-  if (filtro.dataFim && dt > new Date(filtro.dataFim).getTime()) return false;
+  if (filtro.dataFim) {
+    // Inclui o dia final inteiro (até 23:59:59.999).
+    const fim = new Date(filtro.dataFim);
+    fim.setHours(23, 59, 59, 999);
+    if (dt > fim.getTime()) return false;
+  }
   return true;
 };
 
 // ------------------------------------------------------------------
 // Filtra os quizzes da empresa respeitando origem, período e setor.
 // ------------------------------------------------------------------
-export const filtrarQuizzes = (quizzes: QuizSessao[], filtro: FiltroRelatorio): QuizSessao[] => {
+export const filtrarQuizzes = (quizzes: QuizSessao[], filtro: FiltroRelatorio, usuarios?: Usuario[]): QuizSessao[] => {
   if (filtro.origem === 'desafios') return [];
   return quizzes.filter(q => {
     if (filtro.dataInicio || filtro.dataFim) {
       if (!dentroPeriodo(q.respondido_em || q.criado_em, filtro)) return false;
+    }
+    if (filtro.colaboradorId && q.colaborador_id !== filtro.colaboradorId) return false;
+    if (filtro.setorId && usuarios) {
+      const dono = usuarios.find(u => u.id === q.colaborador_id);
+      if (!dono || dono.setor_id !== filtro.setorId) return false;
+    }
+    if (filtro.categoria && q.categoria !== filtro.categoria) return false;
+    if (filtro.norma) {
+      const alvo = normalizarTexto(filtro.norma);
+      const temNorma = (q.perguntas || []).some(p => normalizarTexto(p.norma_relacionada || '').includes(alvo));
+      if (!temNorma) return false;
     }
     return true;
   });
@@ -66,6 +82,7 @@ export const filtrarDesafios = (desafios: Desafio1v1[], filtro: FiltroRelatorio)
   return desafios.filter(d => {
     if (!dentroPeriodo(d.data_criacao, filtro)) return false;
     if (filtro.setorId && d.desafiante_setor_id !== filtro.setorId && d.desafiado_setor_id !== filtro.setorId) return false;
+    if (filtro.colaboradorId && d.desafiante_id !== filtro.colaboradorId && d.desafiado_id !== filtro.colaboradorId) return false;
     if (filtro.modoDesafio && d.tipo !== filtro.modoDesafio) return false;
     return true;
   });
@@ -423,6 +440,9 @@ export const calcularRankingColaboradores = (
 
       const setorNome = setores.find(s => s.id === u.setor_id)?.nome || 'Geral';
 
+      // Pontos do período (soma do filtrado), não o total da vida toda.
+      const pontosPeriodo = pontosQuizzes;
+
       return {
         usuario_id: u.id,
         nome: u.nome,
@@ -439,7 +459,7 @@ export const calcularRankingColaboradores = (
         acertosDesafios,
         errosDesafios: totalRespDesafios - acertosDesafios,
         taxaAcertoDesafios: totalRespDesafios > 0 ? Number(((acertosDesafios / totalRespDesafios) * 100).toFixed(1)) : 0,
-        pontosTotais: u.estatisticas.pontos_totais || 0,
+        pontosTotais: pontosPeriodo,
       };
     })
     .filter(r => filtro.origem === 'desafios' ? r.desafiosJogados > 0 : filtro.origem === 'quizzes' ? r.quizzesRespondidos > 0 : (r.quizzesRespondidos > 0 || r.desafiosJogados > 0))

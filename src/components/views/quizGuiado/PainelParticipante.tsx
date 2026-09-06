@@ -218,6 +218,8 @@ export const PainelParticipante: React.FC<PainelParticipanteProps> = ({
   // Função para submeter opção selecionada de forma definitiva
   const submeterOpcaoEfetiva = (opcaoIdx: number) => {
     if (respostaConfirmadaRef.current || sala.status !== 'em_andamento' || !perguntaAtual || !participante) return;
+    // Sem limite (0): nunca bloqueia por tempo; com limite: bloqueia no zero.
+    if (tempoLimiteSeg > 0 && tempoRestante <= 0) return;
 
     setOpcaoSelecionada(opcaoIdx);
     setRespostaConfirmada(true);
@@ -493,7 +495,7 @@ export const PainelParticipante: React.FC<PainelParticipanteProps> = ({
                 return (
                   <button
                     key={idx}
-                    disabled={respostaConfirmada || tempoRestante === 0}
+                    disabled={respostaConfirmada || (tempoLimiteSeg > 0 && tempoRestante <= 0)}
                     onClick={() => handleSelecionarOpcao(idx)}
                     className={`p-3.5 sm:p-4 rounded-2xl border text-left flex items-start space-x-3 transition-all transform active:scale-[0.98] bg-gradient-to-br shadow-lg min-h-[52px] touch-manipulation select-none cursor-pointer ${cores[idx]} ${
                       selecionado ? 'ring-4 ring-white scale-[1.01] font-extrabold shadow-2xl' : ''
@@ -530,8 +532,8 @@ export const PainelParticipante: React.FC<PainelParticipanteProps> = ({
               </div>
             )}
 
-            {/* PASSO 6: CASO O CRONÔMETRO CHEGUE A ZERO SEM MENSAGEM */}
-            {tempoRestante === 0 && !respostaConfirmada && (
+            {/* PASSO 6: CASO O CRONÔMETRO CHEGUE A ZERO SEM MENSAGEM (só com limite) */}
+            {tempoLimiteSeg > 0 && tempoRestante <= 0 && !respostaConfirmada && (
               <div className="p-4 bg-amber-500/20 border border-amber-500/40 rounded-2xl text-amber-300 text-xs font-bold space-y-1 animate-fadeIn">
                 <div className="flex items-center space-x-2 text-sm font-extrabold text-amber-400">
                   <Clock className="w-5 h-5 shrink-0" />
@@ -545,7 +547,7 @@ export const PainelParticipante: React.FC<PainelParticipanteProps> = ({
           </div>
 
           {/* Barra de ação sticky no rodapé para confirmação no celular */}
-          {!respostaConfirmada && tempoRestante > 0 && opcaoSelecionada !== null && (
+          {!respostaConfirmada && (tempoLimiteSeg <= 0 || tempoRestante > 0) && opcaoSelecionada !== null && (
             <div className="sticky bottom-3 z-30 m-3 sm:m-4 p-3 sm:p-4 bg-slate-950/95 border-2 border-emerald-500/80 rounded-2xl shadow-2xl backdrop-blur-xl flex items-center justify-between gap-3 animate-fadeIn">
               <div className="min-w-0 flex-1">
                 <span className="text-[10px] sm:text-xs text-slate-400 block font-semibold uppercase tracking-wider">

@@ -203,7 +203,7 @@ interface SSTContextType {
     is_instrutor?: boolean;
     avatar?: string;
     senha?: string;
-  }) => void;
+  }) => boolean | void;
   adicionarUsuariosLote: (novosUsuarios: {
     nome: string;
     email: string;
@@ -212,7 +212,7 @@ interface SSTContextType {
     setor_nome: string;
     perfil: 'colaborador' | 'admin' | 'super_admin';
     is_instrutor?: boolean;
-  }[], targetEmpresaId?: string) => { cadastrados: number; atualizados: number };
+  }[], targetEmpresaId?: string) => { cadastrados: number; atualizados: number; bloqueadosPorLimite?: number };
   editarUsuario: (id: string, usuario: Partial<Usuario>) => void;
   excluirUsuario: (id: string) => void;
 
@@ -533,7 +533,21 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     
     if (isSupabaseConfigured()) {
       if (typeof navigator !== 'undefined' && navigator.onLine === false) {
-        return { success: false, message: 'Você está offline. Verifique sua conexão com a internet para entrar.' };
+        // Offline: permite entrar com a credencial já salva no aparelho.
+        const foundOff = usuarios.find(u => (u.email || '').trim().toLowerCase() === cleanEmail);
+        if (!foundOff || !foundOff.senha) {
+          return { success: false, message: 'Você está sem internet e essa conta ainda não foi usada neste aparelho. Conecte-se uma vez para liberar o acesso offline.' };
+        }
+        const inputHashOff = await hashSha256(passwordInput);
+        const dbOff = (foundOff.senha || '').trim();
+        const okOff = dbOff !== '' && (passwordInput === dbOff || (inputHashOff !== '' && inputHashOff === dbOff));
+        if (!okOff) {
+          return { success: false, message: 'E-mail ou senha incorretos. Verifique suas credenciais e tente novamente.' };
+        }
+        const stOff = checkStatus(foundOff);
+        if (!stOff.allowed) return { success: false, message: stOff.message };
+        login(foundOff);
+        return { success: true, message: 'Entrada offline realizada com os dados salvos no aparelho!', user: foundOff };
       }
       const client = getSupabaseClient();
       if (!client) {
@@ -729,6 +743,13 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const exists = usuarios.some(u => (u.email || '').trim().toLowerCase() === cleanEmail);
     if (exists) {
       return { success: false, message: 'Já existe uma conta com este endereço de e-mail.' };
+    }
+
+    // REGRA DO PLANO: respeita o limite de colaboradores da empresa também no auto-cadastro.
+    const limiteAuto = empresaAlvo.limite_colaboradores ?? 100;
+    const totalAuto = usuarios.filter(u => u.empresa_id === empresaAlvo.id).length;
+    if (totalAuto >= limiteAuto) {
+      return { success: false, message: `Limite de colaboradores atingido! A empresa "${empresaAlvo.nome}" permite ${limiteAuto} colaboradores (Plano ${empresaAlvo.plano || ''}). Fale com o administrador.` };
     }
 
     // SECURITY RULE: Public self-registration ALWAYS creates 'colaborador' accounts.
@@ -2423,6 +2444,20 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Cria uma nova pergunta com ID único e empresa do usuário logado/alvo,
   // salva no estado local e envia para o Supabase.
   const adicionarPergunta = (nova: Omit<Pergunta, 'id' | 'empresa_id'>, targetEmpresaIdInput?: string) => {
+    // Trava dura: barra pergunta quebrada (sem texto, sem alternativas, resposta fora do índice).
+    if (!nova.enunciado || !nova.enunciado.trim()) {
+      alert('Dê o texto da pergunta antes de salvar.');
+      return;
+    }
+    const alts = Array.isArray(nova.alternativas) ? nova.alternativas.map(a => String(a || '').trim()).filter(a => a !== '') : [];
+    if (alts.length < 2) {
+      alert('A pergunta precisa de pelo menos 2 alternativas preenchidas.');
+      return;
+    }
+    if (!Number.isInteger(nova.resposta_correta) || nova.resposta_correta < 0 || nova.resposta_correta >= alts.length) {
+      alert('Marque qual alternativa é a correta antes de salvar.');
+      return;
+    }
     const targetEmpresaId = targetEmpresaIdInput || currentUser?.empresa_id || empresa.id;
     const item: Pergunta = {
       ...nova,
@@ -2538,6 +2573,33 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       for (const q of novosQuizzes) {
         await supabaseService.upsertQuiz(q);
       }
+    }
+
+    // Notifica cada colaborador alvo (sino interno + nuvem para push no celular).
+    // Antes a campanha criava o quiz mas não criava nenhuma notificação — por isso ninguém recebia.
+    try {
+      const notifs = colabsAlvo.map(colab => ({
+        id: `notif-${Date.now()}-${colab.id}-${Math.floor(Math.random() * 100000)}`,
+        usuario_id: colab.id,
+        empresa_id: targetEmpresaId,
+        titulo: '📢 Nova Campanha Disponível!',
+        mensagem: `A campanha "${item.nome}" chegou para você com ${perguntasCampanha.length} perguntas!`,
+        tipo: 'campanha' as const,
+        lida: false,
+        criada_em: new Date().toISOString(),
+        link_acao: item.id,
+        canal: 'push' as const,
+      }));
+      if (notifs.length > 0) {
+        setNotificacoes(prev => [...notifs, ...prev]);
+        if (isSupabaseConfigured()) {
+          for (const n of notifs) {
+            try { await supabaseService.upsertNotificacao(n as any); } catch { /* segue sem quebrar */ }
+          }
+        }
+      }
+    } catch {
+      // Nunca quebra a criação da campanha por causa do aviso.
     }
   };
 
@@ -3489,6 +3551,19 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // CRUD DE PRÊMIOS (Central de Prêmios)
   // Cria uma nova premiação com ID único e empresa do usuário logado.
   const adicionarPremiacao = (premio: Omit<Premiacao, 'id' | 'empresa_id'>) => {
+    // Trava dura: barra prêmio sem nome, custo zerado/negativo ou estoque negativo.
+    if (!premio.titulo || !premio.titulo.trim()) {
+      alert('Dê um nome para o prêmio antes de salvar.');
+      return;
+    }
+    if (!Number.isFinite(Number(premio.custo_pontos)) || Number(premio.custo_pontos) <= 0) {
+      alert('O custo em pontos precisa ser maior que zero.');
+      return;
+    }
+    if (!Number.isFinite(Number(premio.estoque)) || Number(premio.estoque) < 0) {
+      alert('O estoque não pode ser negativo.');
+      return;
+    }
     const item: Premiacao = {
       ...premio,
       id: `prem-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
@@ -3500,7 +3575,18 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Edita uma premiação existente.
   const editarPremiacao = (id: string, dados: Partial<Premiacao>) => {
-    const updated = premiacoes.map(p => p.id === id ? { ...p, ...dados } : p);
+    if (dados.titulo !== undefined && !dados.titulo.trim()) {
+      alert('O nome do prêmio não pode ficar vazio.');
+      return;
+    }
+    if (dados.custo_pontos !== undefined && (!Number.isFinite(Number(dados.custo_pontos)) || Number(dados.custo_pontos) <= 0)) {
+      alert('O custo em pontos precisa ser maior que zero.');
+      return;
+    }
+    if (dados.estoque !== undefined && (!Number.isFinite(Number(dados.estoque)) || Number(dados.estoque) < 0)) {
+      alert('O estoque não pode ser negativo.');
+      return;
+    }    const updated = premiacoes.map(p => p.id === id ? { ...p, ...dados } : p);
     const target = updated.find(p => p.id === id);
     setPremiacoes(updated);
     if (target) supabaseService.upsertPremiacao(target);
@@ -3805,6 +3891,11 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Edita os dados de uma empresa (e a empresa selecionada, se for ela).
   const editarEmpresa = (id: string, dados: Partial<Empresa>) => {
+    // Apenas Super Admin pode editar empresas (paridade com adicionar/excluir).
+    if (currentUser && currentUser.perfil !== 'super_admin') {
+      alert('Atenção: Apenas o usuário Super Administração Global tem permissão para editar empresas.');
+      return;
+    }
     const updated = empresas.map(e => e.id === id ? { ...e, ...dados } : e);
     const target = updated.find(e => e.id === id);
     setEmpresas(updated);
@@ -3954,6 +4045,16 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     avatar?: string;
     senha?: string;
   }) => {
+    // REGRA: respeitar o Limite de Colaboradores da empresa (Plano de Licença).
+    // Antes o campo limite_colaboradores era só visual e deixava cadastrar além do contratado.
+    const empresaAlvoId = novoUsuario.empresa_id || empresa.id;
+    const empresaAlvo = empresas.find(e => e.id === empresaAlvoId) || (empresa.id === empresaAlvoId ? empresa : undefined);
+    const limite = empresaAlvo?.limite_colaboradores ?? 100;
+    const totalNaEmpresa = usuarios.filter(u => u.empresa_id === empresaAlvoId).length;
+    if (totalNaEmpresa >= limite) {
+      alert(`Limite de colaboradores atingido! A empresa "${empresaAlvo?.nome || 'selecionada'}" permite ${limite} colaboradores (Plano ${empresaAlvo?.plano || ''}). Não é possível cadastrar "${novoUsuario.nome}".`);
+      return false;
+    }
     // Security Check: Only super_admin can create super_admin accounts
     // Regra de segurança: só Super Admin cria conta Super Admin.
     let finalPerfil = novoUsuario.perfil;
@@ -4034,6 +4135,7 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       ]);
     }
+    return true;
   };
 
   // Cadastro em lote de usuários (importação CSV).
@@ -4048,10 +4150,13 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setor_nome: string;
     perfil: 'colaborador' | 'admin' | 'super_admin';
     is_instrutor?: boolean;
-  }[], targetEmpresaId?: string): { cadastrados: number; atualizados: number } => {
+  }[], targetEmpresaId?: string): { cadastrados: number; atualizados: number; bloqueadosPorLimite: number } => {
     const targetEmpId = targetEmpresaId || empresa.id;
     let cadastrados = 0;
     let atualizados = 0;
+    let bloqueadosPorLimite = 0;
+    const empresaAlvoLote = empresas.find(e => e.id === targetEmpId) || (empresa.id === targetEmpId ? empresa : undefined);
+    const limiteLote = empresaAlvoLote?.limite_colaboradores ?? 100;
 
     // Cópias de trabalho dos estados (para processar tudo antes de salvar).
     let currentSectors = [...setores];
@@ -4109,7 +4214,11 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         supabaseService.upsertUsuario(updatedUser);
         atualizados++;
       } else {
-        // INSERT NEW USER
+        // INSERT NEW USER — respeita o limite do plano antes de criar.
+        if (currentUsers.filter(u => u.empresa_id === targetEmpId).length >= limiteLote) {
+          bloqueadosPorLimite++;
+          return;
+        }
         // USUÁRIO NOVO → cria com estatísticas zeradas.
         const newUser: Usuario = {
           id: `usr-${Date.now()}-${idx}-${Math.floor(Math.random()*1000)}`,
@@ -4154,7 +4263,10 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setSetores(currentSectors);
     setUsuarios(currentUsers);
 
-    return { cadastrados, atualizados };
+    if (bloqueadosPorLimite > 0) {
+      alert(`Limite de colaboradores atingido! ${bloqueadosPorLimite} cadastro(s) bloqueado(s). A empresa permite ${limiteLote} colaboradores (Plano ${empresaAlvoLote?.plano || ''}).`);
+    }
+    return { cadastrados, atualizados, bloqueadosPorLimite };
   };
 
   // Edita um usuário (e atualiza o currentUser se for ele próprio).
@@ -4186,6 +4298,19 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Exclui um usuário.
   const excluirUsuario = (id: string) => {
+    // Regra: nunca permitir auto-exclusão (lockout) nem excluir o último admin da empresa.
+    if (currentUser && id === currentUser.id) {
+      alert('Atenção: Você não pode excluir o próprio usuário logado.');
+      return;
+    }
+    const alvo = usuarios.find(u => u.id === id);
+    if (alvo && (alvo.perfil === 'admin' || alvo.perfil === 'super_admin')) {
+      const adminsRestantes = usuarios.filter(u => u.empresa_id === alvo.empresa_id && (u.perfil === 'admin' || u.perfil === 'super_admin') && u.id !== id && u.ativo !== false);
+      if (adminsRestantes.length === 0 && alvo.perfil === 'admin') {
+        alert('Atenção: Não é possível excluir o último administrador da empresa.');
+        return;
+      }
+    }
     setUsuarios(prev => prev.filter(u => u.id !== id));
     supabaseService.deleteUsuario(id);
   };
@@ -5193,7 +5318,8 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           acertos: 0,
           erros: sala.perguntas?.length || 0,
           nota_final: 0,
-          nota_minima: 7.0,
+          // Preserva a escala original (70 = 0-100). O cálculo converte para 0-10.
+          nota_minima: (sala as any).nota_minima_aprovacao ?? (sala as any).nota_minima ?? 70,
           situacao: 'NAO_APROVADO',
           desempenho_por_tema: [],
           respostas_detalhadas: [],
@@ -5387,7 +5513,11 @@ export const SSTProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       };
 
       if (isModoAvaliacao) {
-        novosResultados.push(resultado);
+        // Não salva prova em branco (ninguém respondeu nada) — evita laudo zerado na lista.
+        const totalRespondidas = Object.keys(p.respostas || {}).length;
+        if (totalRespondidas > 0) {
+          novosResultados.push(resultado);
+        }
       }
 
       return {

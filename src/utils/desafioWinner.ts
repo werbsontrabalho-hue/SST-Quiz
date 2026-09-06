@@ -107,11 +107,12 @@ export function calcularResultadoDesafio(args: CalcularDesafioArgs): CalcularDes
       motivoVitoria = `Vitória por acertos: ${acertos5_1} x ${acertos5_2}`;
     } else if (acertos5_2 > acertos5_1) {
       // Desafiado vence direto nas 5 perguntas.
+      // Placar sempre na ordem desafiante x desafiado.
       statusFinal = 'concluido';
       vencedorId = desafio.desafiado_id;
       vencedorSetorId = desafio.desafiado_setor_id;
-      placarFinal = `${acertos5_2} x ${acertos5_1}`;
-      motivoVitoria = `Vitória por acertos: ${acertos5_2} x ${acertos5_1}`;
+      placarFinal = `${acertos5_1} x ${acertos5_2}`;
+      motivoVitoria = `Vitória por acertos: ${acertos5_1} x ${acertos5_2}`;
     } else {
       // EMPATE nas 5 perguntas → precisa da Pergunta de Desempate (6ª).
       const currentTotalQ = perguntasFinais.length || 5;
@@ -146,7 +147,7 @@ export function calcularResultadoDesafio(args: CalcularDesafioArgs): CalcularDes
             statusFinal = 'concluido';
             vencedorId = desafio.desafiado_id;
             vencedorSetorId = desafio.desafiado_setor_id;
-            placarFinal = `${acertos5_2} x ${acertos5_1} (+ Desempate)`;
+            placarFinal = `${acertos5_1} x ${acertos5_2} (+ Desempate)`;
             motivoVitoria = `Vitória por acerto na Pergunta de Desempate (${currentTotalQ}ª pergunta)!`;
           } else if (respTB_1.correta && respTB_2.correta) {
             // AMBOS acertaram → quem respondeu mais rápido vence.
@@ -173,23 +174,31 @@ export function calcularResultadoDesafio(args: CalcularDesafioArgs): CalcularDes
                 // Desafiado respondeu mais rápido.
                 vencedorId = desafio.desafiado_id;
                 vencedorSetorId = desafio.desafiado_setor_id;
-                placarFinal = `${acertos5_2} x ${acertos5_1} (+ Tempo Desempate)`;
+                placarFinal = `${acertos5_1} x ${acertos5_2} (+ Tempo Desempate)`;
                 motivoVitoria = `Ambos acertaram! Vitória por resposta mais rápida na ${currentTotalQ}ª pergunta (${t2.toFixed(1)}s vs ${t1.toFixed(1)}s)!`;
               }
-            } else {
-              // Empate exato no tempo → adiciona mais uma pergunta.
-              const proximaPergunta = pegarProximaPergunta({ ...desafio, perguntas: perguntasFinais });
-              if (proximaPergunta) {
-                perguntasFinais = [...perguntasFinais, proximaPergunta];
-                statusFinal = 'em_andamento';
               } else {
-                // Sem mais perguntas disponíveis: regra padrão (desafiante vence).
-                statusFinal = 'concluido';
-                vencedorId = desafio.desafiante_id;
-                vencedorSetorId = desafio.desafiante_setor_id;
-                placarFinal = `${acertos5_1} x ${acertos5_2} (+ Tempo Desempate)`;
-                motivoVitoria = 'Ambos acertaram e empataram em tempo. Desafiante venceu por regra padrão.';
-              }
+                // Empate exato no tempo → respeita a regra da empresa (não hardcode desafiante).
+                const proximaPergunta = pegarProximaPergunta({ ...desafio, perguntas: perguntasFinais });
+                if (proximaPergunta) {
+                  perguntasFinais = [...perguntasFinais, proximaPergunta];
+                  statusFinal = 'em_andamento';
+                } else {
+                  // Sem mais perguntas disponíveis: decide pela regra de desempate da empresa.
+                  statusFinal = 'concluido';
+                  if (desempateRule === 'desafiado') {
+                    vencedorId = desafio.desafiado_id;
+                    vencedorSetorId = desafio.desafiado_setor_id;
+                  } else if (desempateRule === 'ninguem') {
+                    vencedorId = undefined;
+                    vencedorSetorId = undefined;
+                  } else {
+                    vencedorId = desafio.desafiante_id;
+                    vencedorSetorId = desafio.desafiante_setor_id;
+                  }
+                  placarFinal = `${acertos5_1} x ${acertos5_2} (+ Tempo Desempate)`;
+                  motivoVitoria = 'Ambos acertaram e empataram em tempo. Vencedor decidido pela regra de desempate da empresa.';
+                }
             }
           } else {
             // AMBOS erraram no desempate → adiciona outra pergunta (looping

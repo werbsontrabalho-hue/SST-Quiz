@@ -143,7 +143,10 @@ export const PrizesView: React.FC = () => {
   const handleSalvarPremio = (e: React.FormEvent) => {
     e.preventDefault();
     // Exige um título preenchido para continuar
-    if (!titulo || !(titulo || '').trim()) return;
+    if (!titulo || !(titulo || '').trim()) {
+      setMensagemFeedback('Dê um nome para o prêmio antes de salvar.');
+      return;
+    }
 
     const imgToSave = (imagemUrl || '').trim() || UNIVERSAL_PRIZE_IMAGE;
 

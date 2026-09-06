@@ -49,5 +49,9 @@
 	<string>O SST Quiz usa a câmera para ler o QR Code da sala do Quiz Guiado e capturar fotos de perfil/evidências.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>O SST Quiz salva PDFs e comprovantes gerados no app.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+	</array>
 </dict>
 </plist>

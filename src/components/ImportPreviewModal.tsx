@@ -182,7 +182,8 @@ export const ImportPreviewModal: React.FC<ImportPreviewModalProps> = ({
           </button>
           <button
             onClick={onConfirm}
-            className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-black rounded-xl text-xs flex items-center space-x-1.5 shadow-lg shadow-emerald-950 transition-all"
+            disabled={totalCount <= 0}
+            className="px-5 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-black rounded-xl text-xs flex items-center space-x-1.5 shadow-lg shadow-emerald-950 transition-all"
           >
             <Check className="w-4 h-4" />
             <span>Confirmar e Salvar no Banco ({totalCount})</span>

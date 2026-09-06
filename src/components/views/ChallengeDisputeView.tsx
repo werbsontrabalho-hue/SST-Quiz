@@ -159,7 +159,7 @@ export const ChallengeDisputeView: React.FC<ChallengeDisputeViewProps> = ({ acti
     (tipoDesafioNovo === 'amistoso' 
       ? (empresa?.configuracoes?.permitirMesmoSetorAmistoso !== false || u.setor_id !== currentUser.setor_id)
       : u.setor_id !== currentUser.setor_id)
-  );
+  ).sort((a, b) => (a.nome || '').localeCompare(b.nome || '', 'pt-BR'));
 
   // Abre um desafio específico: carrega perguntas válidas, detecta se já respondi tudo,
   // restaura sessão parcial (anti-cheat) ou inicia uma nova partida.
@@ -960,14 +960,23 @@ export const ChallengeDisputeView: React.FC<ChallengeDisputeViewProps> = ({ acti
                 >
                   <option value="">-- Escolher Colaborador --</option>
                   {meusSetoresComp.map(u => {
-                    const sNome = setores.find(s => s.id === u.setor_id)?.nome;
+                    const sNome = setores.find(s => s.id === u.setor_id)?.nome || 'Setor não definido';
                     return (
                       <option key={u.id} value={u.id}>
-                        {u.nome} ({sNome})
+                        {u.nome} — {sNome}
                       </option>
                     );
                   })}
                 </select>
+                {meusSetoresComp.length === 0 ? (
+                  <p className="text-[11px] text-amber-300 leading-relaxed mt-1.5">
+                    Ninguém disponível aqui. No modo Competitivo só aparece colaborador ativo da mesma empresa e de OUTRO setor. Para desafiar alguém do seu setor, troque para o modo Amistoso.
+                  </p>
+                ) : tipoDesafioNovo === 'competitivo' ? (
+                  <p className="text-[10px] text-slate-400 leading-relaxed mt-1.5">
+                    Mostrando {meusSetoresComp.length} colaborador(es) de outros setores. Quem é do seu setor não aparece no Competitivo — use o Amistoso para isso.
+                  </p>
+                ) : null}
               </div>
 
               <div className="bg-purple-950/40 border border-purple-500/30 rounded-xl p-3 text-[11px] text-purple-200/90 flex items-start space-x-2 backdrop-blur-md">

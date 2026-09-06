@@ -43,6 +43,17 @@ export const validarCNPJ = (cnpj: string): boolean => {
   // Rejeita sequências repetitivas inválidas conhecidas (ex.: 00000000000000, 11111111111111)
   if (/^(\d)\1{13}$/.test(clean)) return false;
 
+  // Dígito verificador oficial do CNPJ (barrar CNPJ falso com 14 dígitos aleatórios).
+  const calc = (base: string, pesos: number[]): number => {
+    let soma = 0;
+    for (let i = 0; i < base.length; i++) soma += Number(base[i]) * pesos[i];
+    const resto = soma % 11;
+    return resto < 2 ? 0 : 11 - resto;
+  };
+  const d1 = calc(clean.slice(0, 12), [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]);
+  const d2 = calc(clean.slice(0, 12) + d1, [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]);
+  if (d1 !== Number(clean[12]) || d2 !== Number(clean[13])) return false;
+
   return true;
 };
 
@@ -78,8 +89,10 @@ export const formatarCNPJ = (value: string): string => {
  */
 export const validarEmail = (email: string): boolean => {
   if (!email || !email.trim()) return false;
-  const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  return re.test(email.trim());
+  const v = email.trim();
+  if (v.length > 254 || v.includes(' ')) return false;
+  const re = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+  return re.test(v);
 };
 
 /**

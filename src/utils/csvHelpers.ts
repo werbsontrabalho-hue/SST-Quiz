@@ -254,9 +254,19 @@ export const parsePerguntasCSV = (csvText: string): { items: Omit<Pergunta, 'id'
 
       let respIndex = 0;
       const cleanResp = respCorretaStr.trim().toUpperCase();
+      const respostasValidas = ['0', '1', '2', '3', 'A', 'B', 'C', 'D', 'V', 'F', 'VERDADEIRO', 'FALSO'];
+      if (!respostasValidas.includes(cleanResp)) {
+        errors.push(`Linha ${lineNumber}: Resposta correta "${respCorretaStr}" inválida (use 0-3, A-D ou V/F).`);
+        continue;
+      }
       if (cleanResp === '1' || cleanResp === 'B' || cleanResp === 'FALSO') respIndex = 1;
       else if (cleanResp === '2' || cleanResp === 'C') respIndex = 2;
       else if (cleanResp === '3' || cleanResp === 'D') respIndex = 3;
+
+      if (Number.isNaN(tempoSeg) || tempoSeg <= 0 || tempoSeg > 300) {
+        errors.push(`Linha ${lineNumber}: Tempo inválido "${parts[10] || respCorretaStr}". Use 5 a 300 segundos.`);
+        continue;
+      }
 
       const alternativas = tipo === 'verdadeiro_falso' 
         ? ['Verdadeiro', 'Falso']

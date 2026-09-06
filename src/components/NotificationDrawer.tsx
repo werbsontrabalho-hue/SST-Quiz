@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { NotificacaoSST } from '../types';
 import { useSST } from '../context/SSTContext';
+import { ConfirmActionModal } from './ConfirmActionModal';
 
 // ====================================================================
 // NotificationDrawer: gaveta lateral (drawer) de notificações e
@@ -52,6 +53,7 @@ export const NotificationDrawer: React.FC<NotificationDrawerProps> = ({
   const [showSimularForm, setShowSimularForm] = useState(false);
   const [simMensagem, setSimMensagem] = useState('Quiz Diário de SST disponível! Responda em 3 minutos e mantenha seu Streak ativo.');
   const [enviadoFeedback, setEnviadoFeedback] = useState(false);
+  const [showConfirmLimpar, setShowConfirmLimpar] = useState(false);
 
   // True se o usuário atual é um colaborador (participante).
   const isParticipant = currentUser.perfil === 'colaborador';
@@ -207,9 +209,7 @@ export const NotificationDrawer: React.FC<NotificationDrawerProps> = ({
 
             {minhasNotificacoes.length > 0 && (
               <button
-                onClick={() => {
-                  limparTodasNotificacoes();
-                }}
+                onClick={() => setShowConfirmLimpar(true)}
                 className="text-rose-400 hover:text-rose-300 flex items-center space-x-1 text-[11px] bg-rose-500/10 hover:bg-rose-500/20 px-2.5 py-1 rounded-lg border border-rose-500/30 transition-all active:scale-95"
                 title="Apagar todas as notificações"
               >
@@ -353,6 +353,19 @@ export const NotificationDrawer: React.FC<NotificationDrawerProps> = ({
         </div>
 
       </div>
+
+      <ConfirmActionModal
+        isOpen={showConfirmLimpar}
+        onClose={() => setShowConfirmLimpar(false)}
+        onConfirm={() => {
+          limparTodasNotificacoes();
+          setShowConfirmLimpar(false);
+        }}
+        title="Apagar notificações"
+        message="Apagar todas as notificações? Essa ação não pode ser desfeita."
+        confirmLabel="Sim, apagar tudo"
+        tone="rose"
+      />
     </div>
   );
 };

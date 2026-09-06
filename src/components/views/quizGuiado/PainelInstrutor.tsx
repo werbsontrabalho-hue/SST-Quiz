@@ -56,6 +56,7 @@ export const PainelInstrutor: React.FC<PainelInstrutorProps> = ({
 
   const [showApresentacao, setShowApresentacao] = useState(false);
   const [showConfirmReset, setShowConfirmReset] = useState(false);
+  const [showConfirmEncerrar, setShowConfirmEncerrar] = useState(false);
   const [copiedPin, setCopiedPin] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
   const tempoLimiteSeg = sala.tempo_por_pergunta_seg !== undefined
@@ -298,7 +299,7 @@ export const PainelInstrutor: React.FC<PainelInstrutorProps> = ({
 
           {sala.status !== 'encerrado' && sala.status !== 'concluido' && (
             <button
-              onClick={() => encerrarSalaQuizGuiado(sala.id)}
+              onClick={() => setShowConfirmEncerrar(true)}
               className="bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 font-bold px-3 py-2.5 rounded-2xl text-xs flex items-center space-x-1.5 transition-all"
               title="Encerrar Sala e Gerar Relatórios Finais"
             >
@@ -310,6 +311,44 @@ export const PainelInstrutor: React.FC<PainelInstrutorProps> = ({
         </div>
 
       </div>
+
+      {/* MODAL DE CONFIRMAÇÃO DE ENCERRAMENTO DA SALA */}
+      {showConfirmEncerrar && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-white/20 rounded-3xl p-6 max-w-md w-full space-y-4 shadow-2xl text-white">
+            <div className="flex items-center space-x-3 text-rose-400">
+              <Square className="w-6 h-6" />
+              <h3 className="text-lg font-black">Encerrar Sala de Quiz</h3>
+            </div>
+
+            <p className="text-xs text-slate-300 leading-relaxed">
+              Encerrar a sala agora?
+              <br /><br />
+              • Os participantes não poderão mais responder.
+              <br />
+              • Os laudos finais serão gerados. Provas em branco não são salvas.
+            </p>
+
+            <div className="flex items-center justify-end space-x-3 pt-2">
+              <button
+                onClick={() => setShowConfirmEncerrar(false)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-bold"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={() => {
+                  encerrarSalaQuizGuiado(sala.id);
+                  setShowConfirmEncerrar(false);
+                }}
+                className="px-5 py-2 bg-rose-500 hover:bg-rose-400 text-white rounded-xl text-xs font-black shadow-lg"
+              >
+                Sim, Encerrar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* MODAL DE CONFIRMAÇÃO DE REINÍCIO DA SALA */}
       {showConfirmReset && (

@@ -81,7 +81,8 @@ describe('calcularResultadoDesafio', () => {
     assert.equal(resultado.status, 'concluido');
     assert.equal(resultado.vencedorId, 'u2');
     assert.equal(resultado.vencedorSetorId, 'setor-2');
-    assert.equal(resultado.placarFinal, '5 x 0');
+    // Placar sempre na ordem desafiante x desafiado (0 x 5 aqui).
+    assert.equal(resultado.placarFinal, '0 x 5');
   });
 
   it('empate nas 5 perguntas adiciona a 6a pergunta de desempate e segue em andamento', () => {
